@@ -1,8 +1,9 @@
 library(targets)
 library(tarchetypes)
+library(geotargets)
 
 tar_option_set(
-  packages = c("dplyr", "readr", "tidyr", "ggplot2", "sf")
+  packages = c("dplyr", "readr", "tidyr", "ggplot2", "sf", "terra", "randomForest")
 )
 
 tar_source("R/")
@@ -17,6 +18,11 @@ list(
   tar_target(
     samples_file,
     "Pre-Analysis Data Preparation/data_raw/core_samples.csv",
+    format = "file"
+  ),
+  tar_target(
+    covar_file,
+    cfg$COVARIATE_RASTER,
     format = "file"
   ),
 
@@ -51,6 +57,13 @@ list(
 
   # ── STEP 2a: SIMPLE EXTRAPOLATION ─────────────────────────────────────────
   tar_target(step2_extrapolation, simple_extrapolation(stratum_summary, cfg)),
+
+  # ── STEP 3: RANDOM FOREST ─────────────────────────────────────────────────
+  tar_target(rf_data,            prepare_rf_data(cores_harmonized, covar_file)),
+  tar_target(rf_models,          train_rf(rf_data)),
+  tar_terra_rast(rf_rasters,     predict_rf_rasters(rf_models, covar_file)),
+  tar_target(rf_importance_plot, plot_rf_importance(rf_models)),
+  tar_target(rf_maps,            plot_rf_maps(rf_rasters, cfg)),
 
   # ── REPORT ────────────────────────────────────────────────────────────────
   tar_quarto(report_step1, path = "reports/step1_nonspatial.qmd")

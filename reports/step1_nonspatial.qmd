@@ -1,6 +1,6 @@
 ---
-title: "Blue Carbon Analysis — Steps 1 & 2"
-subtitle: "Non-Spatial Analysis and Simple Extrapolation"
+title: "Blue Carbon Analysis — Steps 1, 2 & 3"
+subtitle: "Non-Spatial Analysis, Simple Extrapolation, and Random Forest Mapping"
 date: today
 engine: knitr
 format:
@@ -30,6 +30,10 @@ eda_plots           <- tar_read(eda_plots)
 cores_harmonized    <- tar_read(cores_harmonized)
 stratum_summary     <- tar_read(stratum_summary)
 step2_extrapolation <- tar_read(step2_extrapolation)
+rf_models           <- tar_read(rf_models)
+rf_rasters          <- tar_read(rf_rasters)
+rf_importance_plot  <- tar_read(rf_importance_plot)
+rf_maps             <- tar_read(rf_maps)
 ```
 
 ## Project overview
@@ -102,6 +106,35 @@ Total stock columns appear once `AOI_FILE` is set in `blue_carbon_config.R`.
 step2_extrapolation |>
   mutate(across(where(is.numeric), \(x) round(x, 2))) |>
   kable(caption = "Per-stratum carbon stock summary.")
+```
+
+## Step 3 — Random Forest spatial prediction
+
+### Model performance (80/20 holdout)
+
+```{r}
+rf_models$cv_metrics |>
+  mutate(across(where(is.numeric), \(x) round(x, 3))) |>
+  kable(col.names = c("Outcome", "n test cores", "RMSE (kg/m²)", "R²"),
+        caption = "Random Forest cross-validation on held-out 20% of cores.")
+```
+
+### Variable importance
+
+```{r fig.cap="Top predictors for total carbon stock. Higher % increase in MSE = more important."}
+rf_importance_plot
+```
+
+### Predicted carbon stock — by depth
+
+```{r fig.cap="Random Forest predictions at each VM0033 depth interval (kg C/m²).", fig.width=10, fig.height=8}
+rf_maps$depth_panel
+```
+
+### Predicted carbon stock — total to 1 m
+
+```{r fig.cap="Total predicted carbon stock summed across all VM0033 depth intervals (kg C/m²)."}
+rf_maps$total
 ```
 
 ---
