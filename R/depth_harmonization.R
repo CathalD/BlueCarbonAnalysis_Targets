@@ -11,20 +11,19 @@
 #   carbon_stock_kg_m2 = SOC(g/kg) x BD(g/cm³) x thickness(cm) / 100
 #
 # INPUT:
-#   cores_clean — QA-flagged data frame from run_qc()
-#   cfg         — named list from load_config()
+#   cores_raw — data frame from load_raw_data()
+#   cfg       — named list from load_config()
 #
 # OUTPUT — one row per core x VM0033 depth interval:
 #   core_id, stratum, latitude, longitude,
 #   depth_cm_midpoint, thickness_cm,
 #   soc_harmonized, bd_harmonized,
 #   carbon_stock_kg_m2,
-#   is_extrapolated  — TRUE if target depth exceeded measured range
-#   rmse, r2         — spline fit diagnostics at original measurement depths
-#   qa_realistic     — harmonized values within QC thresholds
-#   qa_monotonic     — SOC decreasing with depth (Spearman rho < -0.3)
+#   is_extrapolated — TRUE if target depth exceeded measured range
+#   rmse, r2        — spline fit diagnostics at original measurement depths
+#   qa_monotonic    — SOC decreasing with depth (Spearman rho < -0.3)
 # ============================================================================
-harmonize_depths <- function(cores_clean, cfg) {
+harmonize_depths <- function(cores_raw, cfg) {
   suppressPackageStartupMessages({ library(dplyr) })
 
   # ── Configuration ─────────────────────────────────────────────────────────
@@ -34,12 +33,10 @@ harmonize_depths <- function(cores_clean, cfg) {
   } else {
     c(15, 15, 20, 50)
   }
-  qc_soc_min <- cfg$QC_SOC_MIN %||% 0
-  qc_soc_max <- cfg$QC_SOC_MAX %||% 500
-  qc_bd_min  <- cfg$QC_BD_MIN  %||% 0.1
-  qc_bd_max  <- cfg$QC_BD_MAX  %||% 3.0
 
-  cores_qa <- cores_clean |> filter(qa_pass) |> arrange(core_id, depth_cm)
+  cores_qa <- cores_raw |>
+    filter(!is.na(depth_cm), !is.na(soc_g_kg), !is.na(bulk_density_g_cm3)) |>
+    arrange(core_id, depth_cm)
 
   message(sprintf("[harmonization] Processing %d cores...",
                   n_distinct(cores_qa$core_id)))
@@ -126,14 +123,6 @@ harmonize_depths <- function(cores_clean, cfg) {
     mutate(carbon_stock_kg_m2 = (soc_harmonized * bd_harmonized * thickness_cm) / 100) |>
     filter(!is.na(carbon_stock_kg_m2))
 
-  # ── Post-harmonization QA flags ───────────────────────────────────────────
-  harmonized <- harmonized |>
-    mutate(
-      qa_realistic_soc = soc_harmonized >= qc_soc_min & soc_harmonized <= qc_soc_max,
-      qa_realistic_bd  = bd_harmonized  >= qc_bd_min  & bd_harmonized  <= qc_bd_max,
-      qa_realistic     = qa_realistic_soc & qa_realistic_bd
-    )
-
   mono <- harmonized |>
     group_by(core_id) |>
     summarise(
@@ -143,9 +132,7 @@ harmonize_depths <- function(cores_clean, cfg) {
 
   harmonized <- harmonized |> left_join(mono, by = "core_id")
 
-  message(sprintf("[harmonization] Complete. %d cores. %d unrealistic predictions.",
-                  n_distinct(harmonized$core_id),
-                  sum(!harmonized$qa_realistic, na.rm = TRUE)))
+  message(sprintf("[harmonization] Complete. %d cores.", n_distinct(harmonized$core_id)))
   harmonized
 }
 
