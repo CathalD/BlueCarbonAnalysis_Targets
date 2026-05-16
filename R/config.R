@@ -23,7 +23,7 @@
 load_config <- function(config_path = "blue_carbon_config.R") {
   # Source the config into a fresh local environment.
   # This does NOT pollute .GlobalEnv — all assignments stay inside env.
-  env <- new.env(parent = emptyenv())
+  env <- new.env(parent = baseenv())
   source(config_path, local = env)
   # Return everything as a named list.
   as.list(env)
