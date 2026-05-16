@@ -26,7 +26,7 @@ CORE_SAMPLES_FILE   <- file.path(DATA_RAW_DIR, "core_samples.csv")
 
 # GEE covariate raster — single multi-band TIF (27 canonical bands)
 # Set COVARIATE_RASTER to the exact filename exported from GEE.
-COVARIATE_RASTER <- file.path(COVARIATES_DIR, "BlueCarbon_Covariate_Snapshot_30m.tif")
+COVARIATE_RASTER <- file.path(COVARIATES_DIR, "BlueCarbon_Covariate_Snapshot_25m_2020_2023.tif")
 
 # AOI boundary file (shapefile, GeoJSON, or GPKG) — used for zonal statistics.
 # Set to NULL if you do not have a boundary file yet.
