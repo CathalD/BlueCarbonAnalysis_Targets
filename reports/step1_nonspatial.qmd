@@ -1,0 +1,185 @@
+---
+title: "Step 1: Non-Spatial Analysis"
+subtitle: "Blue Carbon MMRV Workflow"
+date: today
+engine: knitr
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    embed-resources: true
+    theme: cosmo
+    fig-width: 8
+    fig-height: 5
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r setup}
+# Load all packages required by this report.
+# These must be declared here even though they are also in tar_option_set()
+# in _targets.R — the knitr session is separate from the targets session.
+library(targets)
+library(dplyr)
+library(ggplot2)
+library(knitr)
+library(tidyr)
+
+# Pull all Step 1 targets from the _targets/ cache.
+# tar_read() reads the cached object — it does NOT re-run analysis.
+# Run tar_make() before rendering if any targets are outdated.
+cfg              <- tar_read(cfg)
+cores_raw        <- tar_read(cores_raw)
+cores_clean      <- tar_read(cores_clean)
+eda_plots        <- tar_read(eda_plots)
+cores_harmonized <- tar_read(cores_harmonized)
+stratum_summary  <- tar_read(stratum_summary)
+```
+
+## Project overview
+
+```{r}
+cores_qa <- cores_clean |> filter(qa_pass)
+tibble(
+  Metric = c("Project name", "Scenario", "Monitoring year",
+             "Total cores (QA-passed)", "Total samples (QA-passed)",
+             "QA pass rate (%)"),
+  Value  = c(cfg$PROJECT_NAME, cfg$PROJECT_SCENARIO,
+             as.character(cfg$MONITORING_YEAR),
+             as.character(n_distinct(cores_qa$core_id)),
+             as.character(nrow(cores_qa)),
+             as.character(round(100 * mean(cores_clean$qa_pass, na.rm = TRUE), 1)))
+) |> kable(col.names = c("", ""), align = c("l", "r"))
+```
+
+## QA/QC
+
+### Summary
+
+```{r}
+tibble(
+  Flag = c("Total samples", "Passed QA",
+           "Failed: depth invalid", "Failed: SOC out of range",
+           "Failed: BD out of range", "Failed: missing location"),
+  `n samples` = c(
+    nrow(cores_clean), sum(cores_clean$qa_pass),
+    sum(!cores_clean$qa_depth_valid,  na.rm = TRUE),
+    sum(!cores_clean$qa_soc_valid,    na.rm = TRUE),
+    sum(!cores_clean$qa_bd_valid,     na.rm = TRUE),
+    sum(!cores_clean$qa_has_location, na.rm = TRUE)
+  )
+) |> kable()
+```
+
+```{r fig.cap="Samples flagged per QA issue type. A sample can be flagged for multiple issues."}
+eda_plots$qa_summary
+```
+
+### Bulk density source
+
+```{r}
+cores_clean |>
+  filter(qa_pass) |>
+  group_by(stratum) |>
+  summarise(
+    `n samples`    = n(),
+    `BD measured`  = sum(!bd_estimated, na.rm = TRUE),
+    `BD estimated` = sum( bd_estimated, na.rm = TRUE),
+    `% estimated`  = round(100 * mean(bd_estimated, na.rm = TRUE), 1),
+    `Mean BD`      = round(mean(bulk_density_g_cm3, na.rm = TRUE), 3),
+    .groups = "drop"
+  ) |>
+  kable(
+    col.names = c("Stratum", "n samples", "BD measured", "BD estimated",
+                  "% estimated", "Mean BD (g/cm³)"),
+    caption = paste(
+      "BD defaults from blue_carbon_config.R BD_DEFAULTS:",
+      paste(names(cfg$BD_DEFAULTS), unlist(cfg$BD_DEFAULTS),
+            sep = " = ", collapse = ", ")
+    )
+  )
+```
+
+## Core locations
+
+```{r fig.cap="Core locations coloured by stratum."}
+eda_plots$spatial_map
+```
+
+## SOC profiles
+
+```{r fig.cap="Raw SOC depth profiles. Each line is one core. QA-passed only."}
+eda_plots$depth_profiles
+```
+
+```{r fig.cap="SOC distribution by stratum."}
+eda_plots$soc_by_stratum
+```
+
+## Bulk density
+
+```{r fig.cap="BD distributions. Dashed = literature defaults (bd_estimated = TRUE)."}
+eda_plots$bd_distribution
+```
+
+## Carbon stocks (raw, pre-harmonization)
+
+```{r fig.cap="Total raw carbon stock per core, summed across measured depth intervals."}
+eda_plots$carbon_stocks
+```
+
+## Depth harmonization
+
+### Method
+
+Profiles harmonized to VM0033 standard depths using a hybrid approach:
+
+- **Interpolation** (within measured range): monotone Hermite spline (`monoH.FC`).
+- **Extrapolation** (beyond measured range): exponential decay if Spearman ρ < −0.3
+  and n ≥ 3 per core; constant otherwise. Capped at 2.5× maximum measured depth.
+
+Target depth midpoints: `r paste(cfg$VM0033_DEPTH_MIDPOINTS, "cm", collapse = ", ")`.
+QC thresholds: SOC `r cfg$QC_SOC_MIN`–`r cfg$QC_SOC_MAX` g/kg;
+BD `r cfg$QC_BD_MIN`–`r cfg$QC_BD_MAX` g/cm³.
+
+### Results
+
+```{r}
+stratum_summary |>
+  mutate(across(where(is.numeric), \(x) round(x, 2))) |>
+  select(
+    Stratum              = stratum,
+    `Depth (cm)`         = depth_cm_midpoint,
+    `n cores`            = n_cores,
+    `Mean stock (kg/m²)` = mean_stock,
+    `SD (kg/m²)`         = sd_stock,
+    `Mean SOC (g/kg)`    = mean_soc,
+    `Mean BD (g/cm³)`    = mean_bd,
+    `% extrapolated`     = pct_extrapolated
+  ) |>
+  kable(caption = "Harmonized carbon stocks at VM0033 standard depth intervals.")
+```
+
+### Spline fit diagnostics
+
+```{r}
+cores_harmonized |>
+  distinct(core_id, stratum, rmse, r2, qa_monotonic) |>
+  group_by(stratum) |>
+  summarise(
+    `n cores`             = n(),
+    `Mean RMSE`           = round(mean(rmse, na.rm = TRUE), 3),
+    `Mean R²`             = round(mean(r2,   na.rm = TRUE), 3),
+    `Non-monotonic cores` = sum(!qa_monotonic, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  kable(caption = "Non-monotonic = SOC Spearman rho >= -0.3 (not decreasing with depth).")
+```
+
+---
+
+*Rendered: `r format(Sys.time(), "%Y-%m-%d %H:%M")` |
+Pipeline: `r nrow(tar_meta())` targets*

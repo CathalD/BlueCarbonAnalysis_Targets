@@ -1,21 +1,130 @@
 # Blue Carbon analysis, mapping and reporting workflow
- 
-**Date:** January, 2026  
-**Language:** R  
-**Platform:** RStudio  
+
+**Date:** January, 2026
+**Language:** R
+**Platform:** RStudio
 
 -----
 
 ## Table of Contents
 
-1. [Overview](#overview)
-2. [Quick Guide](#quick-guide)
-3. [Required Inputs](#required-inputs)
-4. [Setting Up Your Project](#setting-up-your-project)
-5. [Expected Outputs](#expected-outputs)
-6. [Implementation Guide](#implementation-guide)
-7. [References](#references)
-8. [Appendix A - Scientific Foundation](#appendix-a---scientific-foundation)
+1. [Running from RStudio via GitHub](#running-from-rstudio-via-github)
+2. [Overview](#overview)
+3. [Quick Guide (targets workflow)](#quick-guide-targets-workflow)
+4. [Required Inputs](#required-inputs)
+5. [Setting Up Your Project](#setting-up-your-project)
+6. [Expected Outputs](#expected-outputs)
+7. [Implementation Guide](#implementation-guide)
+8. [References](#references)
+9. [Appendix A - Scientific Foundation](#appendix-a---scientific-foundation)
+
+---
+
+## Running from RStudio via GitHub
+
+This workflow uses the [`targets`](https://docs.ropensci.org/targets/) package.
+You do not need to download the repository manually — follow these steps to clone
+it directly into RStudio and run the pipeline.
+
+### Step 1: Install required packages
+
+Open RStudio and run this once:
+
+```r
+install.packages(c("targets", "tarchetypes", "quarto", "visNetwork",
+                   "dplyr", "readr", "tidyr", "ggplot2", "sf", "rlang"))
+```
+
+### Step 2: Clone the repository into RStudio
+
+**Option A — RStudio GUI**
+
+1. `File` → `New Project` → `Version Control` → `Git`
+2. Paste the repository URL into **Repository URL**
+3. Choose a local folder and click **Create Project**
+
+RStudio clones the repo and opens it as a project. The `.Rprofile` at the root
+loads automatically, giving you short console aliases (`tm`, `tv`, `tl`, `tm1`).
+
+**Option B — R console**
+
+```r
+# Install usethis if needed: install.packages("usethis")
+usethis::create_from_github(
+  "cathald/bluecarbonanalysis_targets",
+  destdir = "~/path/to/projects"
+)
+```
+
+This clones the repo and opens it as an RStudio project in one step.
+
+### Step 3: Add your data
+
+Place your field data CSVs in `Pre-Analysis Data Preparation/data_raw/`:
+
+| File | Description |
+|---|---|
+| `core_locations.csv` | One row per core — `core_id`, `longitude`, `latitude`, `stratum` |
+| `core_samples.csv` | One row per sample — `core_id`, `depth_top_cm`, `depth_bottom_cm`, `soc_g_kg` |
+
+The pipeline reads directly from `Pre-Analysis Data Preparation/data_raw/`, so keep your data files there.
+
+### Step 4: Configure your project
+
+Open `blue_carbon_config.R` at the project root and edit the project metadata,
+strata names, and QC thresholds for your site. See
+[Setting Up Your Project](#setting-up-your-project) for details.
+
+### Step 5: Run the pipeline
+
+In the RStudio console:
+
+```r
+tm()          # Run all targets (skips anything already up to date)
+tv()          # View the dependency graph in the Viewer pane
+```
+
+Or run Step 1 only:
+
+```r
+tm1()         # Run only the Step 1 Non-Spatial targets
+```
+
+The rendered HTML report will appear at `reports/step1_nonspatial.html`.
+
+### Step 6: Inspect results interactively
+
+```r
+tl(cores_clean)       # Load the QA-passed data into your session
+tl(stratum_summary)   # Load the harmonized summary table
+tl(eda_plots)         # Load the list of EDA plots
+eda_plots$depth_profiles   # View one plot
+```
+
+### Useful console commands
+
+```r
+tar_outdated()                     # What needs to re-run and why
+tar_make(names = "cores_clean")    # Re-run one target and its dependencies
+tar_read("stratum_summary")        # Read a target without adding to .GlobalEnv
+tar_meta() |> select(name, seconds, error)  # Timing and error status per target
+tar_visnetwork()                   # Dependency graph (green = up to date)
+tar_invalidate("cores_harmonized") # Force one target to re-run next time
+tar_destroy(); tar_make()          # Clear entire cache and start fresh
+```
+
+### How the dependency graph works
+
+`tar_visnetwork()` shows green (up to date), orange (outdated), red (errored).
+
+**Example — if you change `QC_SOC_MAX` in `blue_carbon_config.R`:**
+
+```
+cfg → orange → cores_clean → orange → eda_plots + cores_harmonized → orange
+→ stratum_summary + report_step1 → orange
+```
+
+`cores_raw` stays **green** — the raw CSV files did not change.
 
 ---
 
@@ -37,17 +146,15 @@ There are 4 types of spatial analysis this workflow can perform:
 
 ---
 
-## Quick Guide
+## Quick Guide (targets workflow)
 
-**Step 1** - Open R/RStudio
+**Step 1** - Clone the repo into RStudio (see [Running from RStudio via GitHub](#running-from-rstudio-via-github))
 
-**Step 2 (Option 1)** - Download "MasterScript" and import into RStudio, run this script to pull documents directly from GitHub via URL
+**Step 2** - Add your carbon data to `Pre-Analysis Data Preparation/data_raw/` in the same format as `core_locations.csv` and `core_samples.csv`
 
-**Step 2 (Option 2)** - Download entire GitHub repo - Use "MasterScript_Offline" to run workflow
+**Step 3** - Edit `blue_carbon_config.R` at the project root for your site
 
-**Step 3** - Add your carbon data to folder "data_raw" in the same format as `core_locations_TEMPLATE.csv` and `core_samples_TEMPLATE.csv`
-
-**Step 4** - Run "Modules P1 and P2" for Basic Analysis
+**Step 4** - Run `tm()` in the RStudio console for the full pipeline, or `tm1()` for Step 1 only
 
 ### For Advanced Analysis with Remote Sensing:
 
