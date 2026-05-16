@@ -67,8 +67,7 @@ Place your field data CSVs in `Pre-Analysis Data Preparation/data_raw/`:
 | `core_locations.csv` | One row per core — `core_id`, `longitude`, `latitude`, `stratum` |
 | `core_samples.csv` | One row per sample — `core_id`, `depth_top_cm`, `depth_bottom_cm`, `soc_g_kg` |
 
-The `data/raw/` folder contains symlinks to these files so the pipeline finds
-them automatically. Do not move the original files out of `Pre-Analysis Data Preparation/data_raw/`.
+The pipeline reads directly from `Pre-Analysis Data Preparation/data_raw/`, so keep your data files there.
 
 ### Step 4: Configure your project
 

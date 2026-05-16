@@ -21,8 +21,16 @@ list(
   # ── INPUT FILE TRACKING ───────────────────────────────────────────────────
   # format = "file" tracks the path AND a hash of the file's contents.
   # If the CSV changes on disk, all downstream targets become outdated.
-  tar_target(locations_file, "data/raw/core_locations.csv", format = "file"),
-  tar_target(samples_file,   "data/raw/core_samples.csv",   format = "file"),
+  tar_target(
+    locations_file,
+    "Pre-Analysis Data Preparation/data_raw/core_locations.csv",
+    format = "file"
+  ),
+  tar_target(
+    samples_file,
+    "Pre-Analysis Data Preparation/data_raw/core_samples.csv",
+    format = "file"
+  ),
 
   # ── CONFIGURATION ─────────────────────────────────────────────────────────
   tar_target(cfg, load_config("blue_carbon_config.R")),
