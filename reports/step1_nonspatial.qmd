@@ -113,13 +113,13 @@ step2_extrapolation |>
 
 ## Step 3 — Random Forest spatial prediction
 
-### Model performance (80/20 holdout)
+### Model performance
 
 ```{r}
 rf_models$cv_metrics |>
   mutate(across(where(is.numeric), \(x) round(x, 3))) |>
-  kable(col.names = c("Outcome", "n test cores", "RMSE (kg/m²)", "R²"),
-        caption = "Random Forest cross-validation on held-out 20% of cores.")
+  kable(col.names = c("Outcome", "Method", "n", "RMSE (kg/m²)", "R²"),
+        caption = "Method = OOB when fewer than 10 cores; holdout (80/20) otherwise.")
 ```
 
 ### Variable importance
