@@ -202,7 +202,7 @@ plot_rf_maps <- function(rf_rasters, cfg) {
   p_depths <- ggplot(depth_df, aes(x = x, y = y, fill = carbon_stock_kg_m2)) +
     geom_raster() +
     facet_wrap(~layer, ncol = 2) +
-    scale_fill_viridis_c(name = "kg C/m²", option = "YlOrRd", na.value = "grey90") +
+    scale_fill_distiller(name = "kg C/m²", palette = "YlOrRd", direction = 1, na.value = "grey90") +
     coord_equal() +
     theme_bw(base_size = 11) +
     theme(axis.title = element_blank(), axis.text = element_blank(),
@@ -213,7 +213,7 @@ plot_rf_maps <- function(rf_rasters, cfg) {
 
   p_total <- ggplot(total_df, aes(x = x, y = y, fill = carbon_stock_kg_m2)) +
     geom_raster() +
-    scale_fill_viridis_c(name = "kg C/m²", option = "YlOrRd", na.value = "grey90") +
+    scale_fill_distiller(name = "kg C/m²", palette = "YlOrRd", direction = 1, na.value = "grey90") +
     coord_equal() +
     theme_bw(base_size = 11) +
     theme(axis.title = element_blank(), axis.text = element_blank(),
