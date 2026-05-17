@@ -19,6 +19,10 @@ execute:
 ---
 
 ```{r setup}
+# Quarto renders from the document's directory; move up to project root
+# so tar_read() can find the _targets/ store.
+if (!file.exists("_targets")) setwd("..")
+
 library(targets)
 library(dplyr)
 library(ggplot2)
