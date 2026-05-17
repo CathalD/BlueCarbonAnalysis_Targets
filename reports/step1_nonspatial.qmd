@@ -31,7 +31,6 @@ cores_harmonized    <- tar_read(cores_harmonized)
 stratum_summary     <- tar_read(stratum_summary)
 step2_extrapolation <- tar_read(step2_extrapolation)
 rf_models           <- tar_read(rf_models)
-rf_rasters          <- tar_read(rf_rasters)
 rf_importance_plot  <- tar_read(rf_importance_plot)
 rf_maps             <- tar_read(rf_maps)
 ```
