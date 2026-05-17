@@ -195,9 +195,7 @@ plot_rf_maps <- function(rf_rasters, cfg) {
     df
   }
 
-  depth_cols <- grep("^d[0-9]", rf_rasters$outcome_cols %||% names(rf_rasters), value = TRUE)
-  if (length(depth_cols) == 0)
-    depth_cols <- grep("^d[0-9]", names(rf_rasters), value = TRUE)
+  depth_cols <- grep("^d[0-9]", names(rf_rasters), value = TRUE)
 
   depth_df <- bind_rows(lapply(depth_cols, rast_df, r = rf_rasters))
 
