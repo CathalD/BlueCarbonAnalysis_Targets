@@ -109,7 +109,7 @@ train_rf <- function(rf_data, holdout_min = 10) {
     }
     # Fall back to OOB
     oob_mse <- tail(m$mse, 1)
-    data.frame(outcome = y, method = "OOB", n = nrow(m$forest$ncat),
+    data.frame(outcome = y, method = "OOB", n = length(m$y),
                rmse = round(sqrt(oob_mse), 3), r2 = round(tail(m$rsq, 1), 3))
   }))
 
