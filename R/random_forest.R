@@ -47,52 +47,73 @@ prepare_rf_data <- function(cores_harmonized, covar_file) {
 }
 
 # ── 2. Train RF models ────────────────────────────────────────────────────────
-train_rf <- function(rf_data) {
+train_rf <- function(rf_data, holdout_min = 10) {
   suppressPackageStartupMessages({ library(dplyr) })
 
-  meta_cols     <- c("core_id", "stratum", "latitude", "longitude")
-  outcome_cols  <- c("total_stock", grep("^d[0-9]", names(rf_data), value = TRUE))
+  meta_cols      <- c("core_id", "stratum", "latitude", "longitude")
+  outcome_cols   <- c("total_stock", grep("^d[0-9]", names(rf_data), value = TRUE))
   predictor_cols <- setdiff(names(rf_data), c(meta_cols, outcome_cols))
 
-  set.seed(42)
-  n         <- nrow(rf_data)
-  train_idx <- sample(seq_len(n), floor(0.8 * n))
-  train_df  <- rf_data[train_idx, ]
-  test_df   <- rf_data[-train_idx, ]
+  n          <- nrow(rf_data)
+  use_holdout <- n >= holdout_min
 
-  message(sprintf("[rf] Training on %d cores, testing on %d.", length(train_idx),
-                  n - length(train_idx)))
+  set.seed(42)
+  if (use_holdout) {
+    train_idx <- sample(seq_len(n), floor(0.8 * n))
+    train_df  <- rf_data[train_idx, ]
+    test_df   <- rf_data[-train_idx, ]
+    message(sprintf("[rf] %d cores — 80/20 split: %d train, %d test.",
+                    n, length(train_idx), n - length(train_idx)))
+  } else {
+    train_df <- rf_data
+    test_df  <- rf_data[integer(0), ]  # empty
+    message(sprintf("[rf] %d cores (< %d) — training on all data, reporting OOB error only.",
+                    n, holdout_min))
+  }
 
   models <- lapply(outcome_cols, function(y) {
     df <- na.omit(train_df[, c(y, predictor_cols)])
-    if (nrow(df) < 5) {
-      message(sprintf("[rf] Skipping %s — fewer than 5 complete rows.", y))
+    if (nrow(df) < 3) {
+      message(sprintf("[rf] Skipping %s — fewer than 3 complete rows.", y))
       return(NULL)
     }
     randomForest::randomForest(
       as.formula(paste(y, "~ .")),
-      data      = df,
-      ntree     = 500,
+      data       = df,
+      ntree      = 500,
       importance = TRUE
     )
   })
   names(models) <- outcome_cols
   models <- Filter(Negate(is.null), models)
 
-  # CV metrics on held-out 20%
+  if (length(models) == 0) {
+    warning("[rf] No models trained — all outcomes had fewer than 3 complete rows.")
+    return(list(models = list(), cv_metrics = data.frame(),
+                predictor_cols = predictor_cols, outcome_cols = character(0)))
+  }
+
+  # CV metrics: holdout RMSE/R² if enough data, otherwise OOB MSE
   cv_metrics <- bind_rows(lapply(names(models), function(y) {
-    test_data <- na.omit(test_df[, c(y, predictor_cols)])
-    if (nrow(test_data) == 0)
-      return(data.frame(outcome = y, n_test = 0L, rmse = NA_real_, r2 = NA_real_))
-    preds  <- predict(models[[y]], test_data)
-    actual <- test_data[[y]]
-    rmse   <- sqrt(mean((preds - actual)^2))
-    r2     <- 1 - sum((preds - actual)^2) / sum((actual - mean(actual))^2)
-    data.frame(outcome = y, n_test = nrow(test_data),
-               rmse = round(rmse, 3), r2 = round(r2, 3))
+    m <- models[[y]]
+    if (use_holdout && nrow(test_df) > 0) {
+      test_data <- na.omit(test_df[, c(y, predictor_cols)])
+      if (nrow(test_data) > 0) {
+        preds  <- predict(m, test_data)
+        actual <- test_data[[y]]
+        rmse   <- sqrt(mean((preds - actual)^2))
+        r2     <- 1 - sum((preds - actual)^2) / sum((actual - mean(actual))^2)
+        return(data.frame(outcome = y, method = "holdout",
+                          n = nrow(test_data), rmse = round(rmse, 3), r2 = round(r2, 3)))
+      }
+    }
+    # Fall back to OOB
+    oob_mse <- tail(m$mse, 1)
+    data.frame(outcome = y, method = "OOB", n = nrow(m$forest$ncat),
+               rmse = round(sqrt(oob_mse), 3), r2 = round(tail(m$rsq, 1), 3))
   }))
 
-  message("[rf] CV metrics:")
+  message("[rf] Performance metrics:")
   message(paste(capture.output(print(cv_metrics)), collapse = "\n"))
 
   list(
@@ -106,6 +127,10 @@ train_rf <- function(rf_data) {
 # ── 3. Predict across full raster ────────────────────────────────────────────
 predict_rf_rasters <- function(rf_models, covar_file) {
   suppressPackageStartupMessages({ library(terra) })
+
+  if (length(rf_models$models) == 0)
+    stop("[rf] No trained models found — cannot predict. Add more cores (minimum 3 per model).")
+
   message("[rf] Predicting carbon stocks across full AOI raster...")
 
   covar_rast <- rast(covar_file)
@@ -130,6 +155,14 @@ predict_rf_rasters <- function(rf_models, covar_file) {
 # ── 4. Variable importance plot ───────────────────────────────────────────────
 plot_rf_importance <- function(rf_models, top_n = 20) {
   suppressPackageStartupMessages({ library(ggplot2) })
+
+  if (length(rf_models$models) == 0) {
+    message("[rf] No models available — returning empty importance plot.")
+    return(ggplot() +
+      annotate("text", x = 0.5, y = 0.5, label = "No RF models trained\n(too few cores)",
+               size = 6, colour = "grey40") +
+      theme_void())
+  }
 
   m <- rf_models$models[["total_stock"]]
   if (is.null(m)) {
