@@ -21,13 +21,18 @@ list(
     format = "file"
   ),
   tar_target(
+    config_file,
+    "blue_carbon_config.R",
+    format = "file"
+  ),
+  tar_target(
     covar_file,
     cfg$COVARIATE_RASTER,
     format = "file"
   ),
 
   # ── CONFIGURATION ─────────────────────────────────────────────────────────
-  tar_target(cfg, load_config("blue_carbon_config.R")),
+  tar_target(cfg, load_config(config_file)),
 
   # ── STEP 1a: LOAD & PREPARE DATA ──────────────────────────────────────────
   tar_target(
