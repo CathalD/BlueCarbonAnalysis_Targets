@@ -1,0 +1,7 @@
+main:
+  script: _targets.R
+  store: _targets
+
+transfer:
+  script: _targets_transfer.R
+  store: _targets_transfer
