@@ -12,6 +12,7 @@ PROJECT_LOCATION <- "Chemainus Test 1"
 # ── Input file paths ──────────────────────────────────────────────────────────
 PRE_ANALYSIS_DIR <- "Pre-Analysis Data Preparation"
 DATA_RAW_DIR     <- file.path(PRE_ANALYSIS_DIR, "data_raw")
+DATA_GLOBAL_DIR  <- file.path(PRE_ANALYSIS_DIR, "data_global")
 COVARIATES_DIR   <- file.path(PRE_ANALYSIS_DIR, "covariates")
 
 # Remote sensing covariate raster (multi-band GEE export)

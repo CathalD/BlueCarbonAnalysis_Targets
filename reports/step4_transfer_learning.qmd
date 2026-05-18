@@ -1,0 +1,161 @@
+---
+title: "Blue Carbon Analysis — Step 4"
+subtitle: "Transfer Learning with Global Coastal Wetland Data"
+date: today
+engine: knitr
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    embed-resources: true
+    theme: cosmo
+    fig-width: 10
+    fig-height: 6
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r setup}
+# Look for the transfer store relative to project root
+if (!file.exists("_targets_transfer")) setwd("..")
+library(targets); library(dplyr); library(ggplot2); library(knitr)
+
+cfg_tl    <- tar_read(cfg_tl,    store = "_targets_transfer")
+tl_models <- tar_read(tl_models, store = "_targets_transfer")
+tl_maps   <- tar_read(tl_maps,   store = "_targets_transfer")
+```
+
+## What this step does
+
+Step 4 uses **transfer learning** to improve carbon stock predictions in a
+local estuary with very few field cores (typically N ≈ 6–15) by borrowing
+information from a global coastal wetland database.
+
+**The challenge:** a random forest trained on 6 local cores can describe those
+cores but cannot reliably generalise to unsampled pixels. The global database
+has thousands of coastal wetland cores, but it was collected across many
+different ecosystems and climates.
+
+**The solution — Wadoux instance weighting:**
+
+1. Train a *domain classifier* to identify which global cores are most similar
+   to the local environment (using remote sensing covariates).
+2. Up-weight similar global cores so they dominate the global random forest.
+3. Apply the global random forest to the local site as a *prior*.
+4. Estimate a *bias correction* — the average difference between what the
+   global model predicts and what was actually measured locally.
+5. Add the bias correction to every predicted pixel.
+6. Bootstrap the local residuals to generate 90% prediction intervals
+   (required by VM0033).
+
+**Outputs:**
+
+- Per-pixel maps for each VM0033 depth interval showing the global prior and
+  the bias-corrected (transfer) prediction.
+- A LOCO (leave-one-core-out) cross-validation table comparing transfer
+  learning against the uncorrected global model.
+
+## Model performance
+
+```{r cv-table}
+summary_df <- tl_maps$summary
+
+if (nrow(summary_df) == 0) {
+  cat("No models were successfully trained. Check data completeness.")
+} else {
+  summary_df |>
+    mutate(
+      depth_interval = c("0–15 cm", "15–30 cm", "30–50 cm", "50–100 cm")[
+        match(depth_cm, c(7.5, 22.5, 40, 75))
+      ],
+      bias_correction = sprintf("%+.3f", bias_correction),
+      cv_r2_tl        = ifelse(is.na(cv_r2_tl),     "—", sprintf("%.3f", cv_r2_tl)),
+      cv_r2_global    = ifelse(is.na(cv_r2_global),  "—", sprintf("%.3f", cv_r2_global)),
+      cv_rmse_tl      = ifelse(is.na(cv_rmse_tl),    "—", sprintf("%.4f", cv_rmse_tl)),
+      cv_rmse_global  = ifelse(is.na(cv_rmse_global),"—", sprintf("%.4f", cv_rmse_global))
+    ) |>
+    select(
+      `Depth interval` = depth_interval,
+      `N global`   = n_global,
+      `N local`    = n_local,
+      `Covariates` = n_covariates,
+      `Bias (kg/m²)` = bias_correction,
+      `Bias SE`    = bias_se,
+      `TL R²`      = cv_r2_tl,
+      `Global R²`  = cv_r2_global,
+      `TL RMSE`    = cv_rmse_tl,
+      `Global RMSE`= cv_rmse_global
+    ) |>
+    kable(align = c("l", rep("r", 9)),
+          caption = "LOCO CV: transfer learning vs uncorrected global model")
+}
+```
+
+### Interpreting the table
+
+| Column | What it means |
+|--------|---------------|
+| **Bias** | Mean residual: how much the global model over/under-predicts locally. Added to all pixels in the Transfer Final map. |
+| **Bias SE** | Bootstrap standard error on the bias estimate (500 resamples). Larger values indicate the local sample is too small to pin down the bias reliably. |
+| **TL R²** | Cross-validation R² after bias correction. Negative values are possible when N_local is tiny and the global model is biased. |
+| **Global R²** | Same but without the bias correction. A positive improvement from Global to TL confirms the correction is helping. |
+
+> **VM0033 guidance:** the standard requires uncertainty at the 90% confidence
+> level. Total prediction SE = √(bias_SE² + residual_variance). With N_local < 10,
+> the bias SE dominates — collect more cores to narrow this interval.
+
+## Maps
+
+### Global prior vs transfer-corrected prediction
+
+```{r maps, fig.height=8}
+print(tl_maps$maps)
+```
+
+**Global prior** — the Wadoux-weighted random forest trained on the global
+database, with no local correction.
+
+**Transfer (bias-corrected)** — global prior shifted by the mean local
+residual. This map accounts for systematic over- or under-prediction in the
+local ecosystem.
+
+### Cross-validation comparison
+
+```{r cv-plot}
+print(tl_maps$validation)
+```
+
+## How to use these outputs
+
+**For VM0033 reporting:**
+
+The Transfer Final rasters (`outputs/transfer/tl_carbon_stocks_kg_m2.tif`)
+are the recommended prediction surfaces. Bands per depth are named:
+
+- `dX_Global_Prior` — uncorrected global RF prediction
+- `dX_Transfer_Final` — bias-corrected prediction **(use this)**
+- `dX_Local_Only` — constant raster = mean of local cores (naive baseline)
+- `dX_Difference` — Transfer Final minus Local Only
+
+To generate 90% prediction intervals for a depth d:
+
+```r
+m   <- tl_models$models[["7.5"]]
+se  <- sqrt(m$bias_se^2 + m$residual_sd^2)
+z   <- qnorm(0.95)   # one-sided 95% = two-sided 90% CI
+
+# For a single pixel with transfer_final prediction p:
+lower <- p - z * se
+upper <- p + z * se
+```
+
+**Next steps:**
+
+- Run Step 4 → Step 3 comparison: do the transfer learning maps and the local
+  RF agree on the spatial pattern?
+- If bias is large (|bias| > 0.5 × local mean), investigate whether the global
+  training data covers the local ecosystem type adequately.
+- Add more local cores to reduce bias SE and narrow the 90% CI.
