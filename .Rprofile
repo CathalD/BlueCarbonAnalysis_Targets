@@ -11,7 +11,7 @@ tm1 <- function()   targets::tar_make(names = c(
   "cores_raw", "eda_plots", "cores_harmonized",
   "stratum_summary", "step2_extrapolation",
   "rf_data", "rf_models", "rf_rasters", "rf_importance_plot", "rf_maps",
-  "report_step1"
+  "report_nonspatial", "report_rf"
 ))
 
 message("targets loaded. Use tm(), tv(), tl(target_name), tm1() for full pipeline.")
