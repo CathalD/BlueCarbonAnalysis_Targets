@@ -153,7 +153,7 @@ predict_rf_rasters <- function(rf_models, covar_file) {
 }
 
 # ── 4. Variable importance plot ───────────────────────────────────────────────
-plot_rf_importance <- function(rf_models, top_n = 20) {
+plot_rf_importance <- function(rf_models, cfg, top_n = 20) {
   suppressPackageStartupMessages({ library(ggplot2) })
 
   if (length(rf_models$models) == 0) {
@@ -175,13 +175,25 @@ plot_rf_importance <- function(rf_models, top_n = 20) {
     (\(d) d[order(-d$importance), ])() |>
     head(top_n)
 
-  ggplot(imp_df, aes(x = reorder(variable, importance), y = importance)) +
+  # Apply human-readable band labels from config if available
+  band_labels <- cfg$BAND_LABELS
+  if (!is.null(band_labels)) {
+    imp_df$label <- ifelse(
+      imp_df$variable %in% names(band_labels),
+      band_labels[imp_df$variable],
+      imp_df$variable
+    )
+  } else {
+    imp_df$label <- imp_df$variable
+  }
+
+  ggplot(imp_df, aes(x = reorder(label, importance), y = importance)) +
     geom_col(fill = "#2c7bb6", alpha = 0.8) +
     coord_flip() +
-    theme_bw(base_size = 11) +
-    labs(title = "Random Forest variable importance",
-         subtitle = "Total stock model — % increase in MSE when variable permuted",
-         x = NULL, y = "% increase in MSE")
+    theme_bw(base_size = 10) +
+    labs(title = "Random Forest — variable importance (total stock model)",
+         subtitle = "★ = strong theoretical link to coastal carbon stocks",
+         x = NULL, y = "% increase in MSE when variable permuted")
 }
 
 # ── 5. Prediction maps ────────────────────────────────────────────────────────

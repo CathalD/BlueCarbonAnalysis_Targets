@@ -1,0 +1,137 @@
+---
+title: "Blue Carbon Analysis — Step 3"
+subtitle: "Random Forest Spatial Prediction"
+date: today
+engine: knitr
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    embed-resources: true
+    theme: cosmo
+    fig-width: 9
+    fig-height: 6
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r setup}
+if (!file.exists("_targets")) setwd("..")
+library(targets); library(dplyr); library(ggplot2); library(knitr)
+
+cfg                <- tar_read(cfg)
+stratum_summary    <- tar_read(stratum_summary)
+rf_models          <- tar_read(rf_models)
+rf_importance_plot <- tar_read(rf_importance_plot)
+rf_maps            <- tar_read(rf_maps)
+```
+
+## What this step does
+
+Step 3 uses a Random Forest model to predict carbon stock spatially across the
+full project area using remote sensing covariates (the multi-band GEE raster).
+Each pixel in the output maps receives a predicted carbon stock value
+(kg C/m²) based on the relationship the model learned from the field cores.
+
+**Outputs:** one prediction map per VM0033 depth interval, plus a total stock
+map summed to 1 m depth. These maps can be used to identify where carbon is
+concentrated and to produce spatially-explicit total stock estimates.
+
+## Model performance
+
+### What good performance looks like
+
+The VM0033 standard targets **≤ 20% relative error at 90% confidence**.
+As a rough guide, this corresponds to:
+
+| Metric | Target | Acceptable |
+|--------|--------|------------|
+| R² | > 0.80 | > 0.60 |
+| RMSE / mean stock | < 20% | < 30% |
+| OOB error (when n < 10) | Not reliable — collect more cores | — |
+
+**Minimum recommended sample size:** ~30 cores per stratum for a model
+that meets VM0033 precision. With fewer cores, the model is fitting the
+training data rather than learning a generalizable spatial pattern.
+Treat predictions as indicative until more cores are added.
+
+### Current results
+
+```{r}
+mean_total <- stratum_summary |>
+  group_by(stratum) |>
+  summarise(mean_total = sum(mean_stock, na.rm = TRUE), .groups = "drop") |>
+  summarise(overall_mean = mean(mean_total)) |>
+  pull(overall_mean)
+
+rf_models$cv_metrics |>
+  mutate(
+    `RMSE / mean (%)` = round(rmse / mean_total * 100, 1),
+    across(where(is.numeric), \(x) round(x, 3))
+  ) |>
+  kable(
+    col.names = c("Outcome", "Method", "n cores", "RMSE (kg/m²)", "R²", "RMSE / mean (%)"),
+    caption = paste0(
+      "Method = OOB (out-of-bag, all cores used for training) when n < 10; ",
+      "holdout 80/20 split otherwise. ",
+      "Mean total stock across strata: ", round(mean_total, 2), " kg/m²."
+    )
+  )
+```
+
+```{r results='asis'}
+# Interpret performance
+if (nrow(rf_models$cv_metrics) == 0) {
+  cat("> **No models trained** — fewer than 3 complete cores per outcome.",
+      "Add more field cores and re-run `tm()`.\n")
+} else {
+  best_r2 <- max(rf_models$cv_metrics$r2, na.rm = TRUE)
+  n_cores <- rf_models$cv_metrics$n[1]
+  if (best_r2 < 0.6 || n_cores < 10) {
+    cat(paste0(
+      "> **Interpretation:** With ", n_cores, " core(s), the model does not yet meet ",
+      "VM0033 precision targets. Current predictions show the spatial pattern of the ",
+      "remote sensing covariates weighted by the limited core data — useful for ",
+      "identifying priority sampling locations, but not yet suitable for carbon ",
+      "credit reporting. **Aim for ≥ 30 cores per stratum.**\n"
+    ))
+  } else {
+    cat(paste0(
+      "> **Interpretation:** Model R² = ", round(best_r2, 2),
+      " — predictions are approaching VM0033 precision targets.\n"
+    ))
+  }
+}
+```
+
+## Variable importance
+
+Which remote sensing layers drove the predictions most?
+Higher % increase in MSE means the model depends more heavily on that variable.
+★ marks bands with strong theoretical links to coastal carbon stocks in the literature.
+
+```{r fig.cap="Top predictors for total carbon stock. Variables without a ★ label are raw band codes — update BAND_LABELS in blue_carbon_config.R to add descriptions.", fig.height=7}
+rf_importance_plot
+```
+
+## Predicted carbon stock maps
+
+### By VM0033 depth interval
+
+```{r fig.cap="Predicted carbon stock (kg C/m²) at each VM0033 depth interval.", fig.width=10, fig.height=8}
+rf_maps$depth_panel
+```
+
+### Total to 1 m depth
+
+```{r fig.cap="Total predicted carbon stock summed across all VM0033 depth intervals (kg C/m²)."}
+rf_maps$total
+```
+
+---
+
+*Rendered: `r format(Sys.time(), "%Y-%m-%d %H:%M")` |
+See `reports/step1_nonspatial.html` for non-spatial analysis and simple extrapolation.*

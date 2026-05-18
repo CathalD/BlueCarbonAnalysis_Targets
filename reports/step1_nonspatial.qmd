@@ -1,6 +1,6 @@
 ---
-title: "Blue Carbon Analysis — Steps 1, 2 & 3"
-subtitle: "Non-Spatial Analysis, Simple Extrapolation, and Random Forest Mapping"
+title: "Blue Carbon Analysis — Steps 1 & 2"
+subtitle: "Non-Spatial Analysis and Simple Extrapolation"
 date: today
 engine: knitr
 format:
@@ -19,24 +19,14 @@ execute:
 ---
 
 ```{r setup}
-# Quarto renders from the document's directory; move up to project root
-# so tar_read() can find the _targets/ store.
 if (!file.exists("_targets")) setwd("..")
-
-library(targets)
-library(dplyr)
-library(ggplot2)
-library(knitr)
+library(targets); library(dplyr); library(ggplot2); library(knitr)
 
 cfg                 <- tar_read(cfg)
 cores_raw           <- tar_read(cores_raw)
 eda_plots           <- tar_read(eda_plots)
-cores_harmonized    <- tar_read(cores_harmonized)
 stratum_summary     <- tar_read(stratum_summary)
 step2_extrapolation <- tar_read(step2_extrapolation)
-rf_models           <- tar_read(rf_models)
-rf_importance_plot  <- tar_read(rf_importance_plot)
-rf_maps             <- tar_read(rf_maps)
 ```
 
 ## Project overview
@@ -111,36 +101,7 @@ step2_extrapolation |>
   kable(caption = "Per-stratum carbon stock summary.")
 ```
 
-## Step 3 — Random Forest spatial prediction
-
-### Model performance
-
-```{r}
-rf_models$cv_metrics |>
-  mutate(across(where(is.numeric), \(x) round(x, 3))) |>
-  kable(col.names = c("Outcome", "Method", "n", "RMSE (kg/m²)", "R²"),
-        caption = "Method = OOB when fewer than 10 cores; holdout (80/20) otherwise.")
-```
-
-### Variable importance
-
-```{r fig.cap="Top predictors for total carbon stock. Higher % increase in MSE = more important."}
-rf_importance_plot
-```
-
-### Predicted carbon stock — by depth
-
-```{r fig.cap="Random Forest predictions at each VM0033 depth interval (kg C/m²).", fig.width=10, fig.height=8}
-rf_maps$depth_panel
-```
-
-### Predicted carbon stock — total to 1 m
-
-```{r fig.cap="Total predicted carbon stock summed across all VM0033 depth intervals (kg C/m²)."}
-rf_maps$total
-```
-
 ---
 
 *Rendered: `r format(Sys.time(), "%Y-%m-%d %H:%M")` |
-Pipeline: `r nrow(tar_meta())` targets*
+See `reports/step3_random_forest.html` for spatial predictions.*
