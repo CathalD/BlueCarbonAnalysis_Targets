@@ -190,10 +190,18 @@ stopifnot(length(CANONICAL_BANDS) == 27L)
 # masking produces an unbiased median over the full inundation cycle.
 #
 # Performance notes applied:
-#   ① filterBounds(region) BEFORE .map() — spatial filter before per-image processing
+#   ① filterBounds(region) BEFORE .map() — spatial filter constrains imagery to batch bbox
 #   ② CLOUDY_PIXEL_PERCENTAGE < 20 at collection level
 #   ③ .select(.S2_BANDS_FULL) BEFORE .map() — load only needed bands per tile
 #   ④ QA60 bitmask + ÷10000 scaling inside process()
+#
+# NOTE: limit() removed. For globally distributed data limit(N, "CLOUDY_PIXEL_PERCENTAGE")
+# picks the N globally least-cloudy scenes (e.g. all from the Sahara), producing a
+# composite with no valid pixels over coastal wetland points. filterBounds + cloud
+# filter are sufficient; GEE computes the median only where points request it.
+#
+# NOTE: clip(region) removed. For point extraction, reduceRegions() evaluates only at
+# the feature locations regardless. clip() adds a masking step with no benefit.
 .build_s2_median <- function(region) {
   process <- function(image) {
     qa         <- image$select("QA60")
@@ -207,10 +215,9 @@ stopifnot(length(CANONICAL_BANDS) == 27L)
     filterBounds(region)$                                              # ① spatial filter first
     filter(ee$Filter$lt("CLOUDY_PIXEL_PERCENTAGE", .S2_MAX_CLOUD))$   # ② collection pre-filter
     filter(ee$Filter$calendarRange(5, 9, "month"))$
-    limit(.S2_IMAGE_LIMIT, "CLOUDY_PIXEL_PERCENTAGE")$
     select(.S2_BANDS_FULL)$                                           # ③ band selection before map
     map(process)$                                                      # ④ cloud mask + scale inside
-    median()$clip(region)
+    median()
 }
 
 
@@ -371,9 +378,14 @@ stopifnot(length(CANONICAL_BANDS) == 27L)
 # targets → 2 × n_batches S2 composites computed; this halves that to n_batches.
 #
 # use_drive : passed to .ee_fc_result_to_df()
-.extract_batch_s2_all <- function(profiles_df, batch_size = 25L,
+.extract_batch_s2_all <- function(profiles_df, batch_size = 10L,
                                    scale = .S2_SCALE, use_drive = FALSE) {
   suppressPackageStartupMessages(library(dplyr))
+
+  # Sort by longitude then latitude so consecutive batches are geographically
+  # nearby. This keeps each batch's bounding box small so filterBounds actually
+  # constrains the S2 collection to local imagery.
+  profiles_df <- profiles_df[order(profiles_df$longitude, profiles_df$latitude), ]
 
   n         <- nrow(profiles_df)
   n_batches <- ceiling(n / batch_size)
@@ -446,9 +458,12 @@ extract_sar <- function(profiles_df, gee_project = NULL, use_drive = FALSE) {
 }
 
 extract_ndvi_stddev <- function(profiles_df, gee_project = NULL,
-                                 batch_size = 25L, use_drive = FALSE) {
+                                 batch_size = 10L, use_drive = FALSE) {
   suppressPackageStartupMessages({ library(rgee); library(dplyr) })
   initialize_gee(gee_project)
+
+  # Sort geographically so each batch's bbox is small and filterBounds is tight.
+  profiles_df <- profiles_df[order(profiles_df$longitude, profiles_df$latitude), ]
 
   n         <- nrow(profiles_df)
   n_batches <- ceiling(n / batch_size)
@@ -496,7 +511,7 @@ extract_ndvi_stddev <- function(profiles_df, gee_project = NULL,
 extract_s2_all <- function(profiles_df, gee_project = NULL, use_drive = FALSE) {
   suppressPackageStartupMessages(library(rgee))
   initialize_gee(gee_project)
-  .extract_batch_s2_all(profiles_df, batch_size = 25L,
+  .extract_batch_s2_all(profiles_df, batch_size = 10L,
                          scale = .S2_SCALE, use_drive = use_drive)
 }
 
