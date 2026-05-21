@@ -165,11 +165,14 @@ stopifnot(length(CANONICAL_BANDS) == 27L)
   process <- function(image) {
     qa         <- image$select("QA60")
     cloud_mask <- qa$bitwiseAnd(1024L)$eq(0L)$And(qa$bitwiseAnd(2048L)$eq(0L))
+    # normalizedDifference always returns band "nd"; renamed at the collection level
+    # below so the rename survives the reduce() step.
     image$divide(10000)$
       updateMask(cloud_mask)$
-      normalizedDifference(c("B8", "B4"))$rename("NDVI")  # → stdDev gives "NDVI_stdDev"
+      normalizedDifference(c("B8", "B4"))
   }
 
+  # "nd" → reduce(stdDev()) → "nd_stdDev" → rename → "NDVI_stdDev"
   ee$ImageCollection("COPERNICUS/S2_SR_HARMONIZED")$
     filterDate(.S2_START, .S2_END)$
     filterBounds(region)$                                              # spatial filter first
@@ -505,7 +508,10 @@ extract_ndvi_stddev <- function(profiles_df, gee_project = NULL,
                   sum(vapply(all_rows, nrow, 0L)), n_failed))
 
   if (length(all_rows) == 0L) return(data.frame())
-  dplyr::bind_rows(all_rows)
+  result <- dplyr::bind_rows(all_rows)
+  # Diagnostic: show what GEE actually returned so band-naming issues are visible.
+  message(sprintf("  Columns returned: %s", paste(names(result), collapse = ", ")))
+  result
 }
 
 extract_s2_all <- function(profiles_df, gee_project = NULL, use_drive = FALSE) {
