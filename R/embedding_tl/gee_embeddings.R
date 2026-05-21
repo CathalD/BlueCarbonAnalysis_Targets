@@ -20,16 +20,24 @@
 }
 
 
-# Internal: rename bands to emb_1 … emb_N using an ee$Image expression list.
-# GEE band names for this collection are unnamed by default; we rename in R
-# after download rather than in GEE to avoid EE string-expression complexity.
+# Internal: rename embedding bands to emb_1 … emb_N.
+# Identifies embedding columns as every numeric column that is NOT a known
+# metadata field — robust to whatever band naming GEE uses for this collection.
 .rename_emb_bands <- function(df, n = .EMB_N_BANDS) {
-  emb_cols_old <- grep("^(emb_|embedding_|b)", names(df), value = TRUE,
-                       ignore.case = TRUE)
-  emb_cols_old <- emb_cols_old[seq_len(min(n, length(emb_cols_old)))]
-  if (length(emb_cols_old) == n) {
-    names(df)[match(emb_cols_old, names(df))] <- paste0("emb_", seq_len(n))
+  meta <- c("profile_id", "dataset", "system:index", ".geo", "first")
+  num_cols <- names(df)[
+    !names(df) %in% meta &
+    vapply(df, is.numeric, logical(1))
+  ]
+  n_found <- min(length(num_cols), n)
+  if (n_found == 0L) {
+    warning("[EMB] No numeric embedding columns found in GEE result — ",
+            "check band names: ", paste(names(df), collapse = ", "))
+    return(df)
   }
+  if (n_found < n)
+    message(sprintf("[EMB] Warning: expected %d embedding bands, found %d", n, n_found))
+  names(df)[match(num_cols[seq_len(n_found)], names(df))] <- paste0("emb_", seq_len(n_found))
   df
 }
 
