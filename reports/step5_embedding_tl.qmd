@@ -1,0 +1,191 @@
+---
+title: "Blue Carbon Analysis — Step 5"
+subtitle: "Embedding-Weighted Transfer Learning (Model 2)"
+date: today
+engine: knitr
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    embed-resources: true
+    theme: cosmo
+    fig-width: 10
+    fig-height: 6
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r setup}
+if (!file.exists("_targets_embedding")) setwd("..")
+library(targets); library(dplyr); library(ggplot2); library(knitr)
+
+cfg_emb       <- tar_read(cfg_emb,          store = "_targets_embedding")
+emb_weights   <- tar_read(emb_weights,       store = "_targets_embedding")
+emb_tl_models <- tar_read(emb_tl_models,    store = "_targets_embedding")
+emb_tl_maps   <- tar_read(emb_tl_maps,      store = "_targets_embedding")
+```
+
+## What this step does
+
+Model 2 replaces the Wadoux random forest domain classifier (Step 4) with
+**embedding cosine similarity** derived from
+`GOOGLE/SATELLITE_EMBEDDING/V1/ANNUAL` — a 64-dimensional foundation model
+encoding of annual satellite imagery (2023–2025 average).
+
+**Key difference from Step 4:**
+
+| | Step 4 (Wadoux) | Step 5 (Embeddings) |
+|-|-----------------|---------------------|
+| Similarity measure | RF on 6 hand-crafted spectral indices | Cosine distance in 64-d learned embedding space |
+| Captures | Broad spectral/topo character | Full phenological + textural + spectral context |
+| Needs local data for Stage A? | Yes — domain classifier trains on global vs local labels | No — similarity is computed directly from AOI mean embedding |
+| Weight interpretation | P(local \| covariates) / P(global \| covariates) | sim^α, α = 5 |
+
+Stages B–D (weighted global RF, bias correction, bootstrap CI) are
+identical to Step 4.
+
+## Embedding similarity weights
+
+### Weight distribution
+
+```{r weight-dist, fig.height=4}
+print(emb_tl_maps$weights)
+```
+
+### Cosine similarity summary
+
+```{r sim-table}
+emb_weights |>
+  summarise(
+    `N cores`    = n(),
+    `Min sim`    = round(min(cosine_sim),    3),
+    `Median sim` = round(median(cosine_sim), 3),
+    `Max sim`    = round(max(cosine_sim),    3),
+    `Weight > 1` = sum(weight > 1),
+    `Weight > 2` = sum(weight > 2),
+    `Weight > 5` = sum(weight > 5)
+  ) |>
+  kable(caption = "Embedding cosine similarity to AOI mean vector (α = 5 sharpening)")
+```
+
+Cores with **cosine similarity > 0.95** are considered strongly similar to
+the local AOI. The sharpening exponent (α = 5) down-weights moderately
+similar cores aggressively, so only the closest analogues dominate the
+global RF.
+
+### Covariate similarity heatmap
+
+```{r heatmap, fig.height=9}
+print(emb_tl_maps$heatmap)
+```
+
+## Model performance
+
+```{r cv-table}
+summary_df <- emb_tl_maps$summary
+
+summary_df |>
+  mutate(
+    depth_interval = c("0–15 cm", "15–30 cm", "30–50 cm", "50–100 cm")[
+      match(depth_cm, c(7.5, 22.5, 40, 75))
+    ],
+    bias_correction = sprintf("%+.3f", bias_correction),
+    cv_r2_tl        = ifelse(is.na(cv_r2_tl),     "—", sprintf("%.3f", cv_r2_tl)),
+    cv_r2_global    = ifelse(is.na(cv_r2_global),  "—", sprintf("%.3f", cv_r2_global)),
+    cv_rmse_tl      = ifelse(is.na(cv_rmse_tl),    "—", sprintf("%.4f", cv_rmse_tl)),
+    cv_rmse_global  = ifelse(is.na(cv_rmse_global),"—", sprintf("%.4f", cv_rmse_global))
+  ) |>
+  select(
+    `Depth`       = depth_interval,
+    `N global`    = n_global,
+    `N local`     = n_local,
+    `Covariates`  = n_covariates,
+    `Bias (kg/m²)`= bias_correction,
+    `Bias SE`     = bias_se,
+    `TL R²`       = cv_r2_tl,
+    `Global R²`   = cv_r2_global,
+    `TL RMSE`     = cv_rmse_tl,
+    `Global RMSE` = cv_rmse_global
+  ) |>
+  kable(align = c("l", rep("r", 9)),
+        caption = "LOCO CV: embedding-weighted TL vs uncorrected global model")
+```
+
+### Cross-validation comparison
+
+```{r cv-plot}
+print(emb_tl_maps$validation)
+```
+
+## Spatial predictions
+
+### Global prior vs transfer-corrected
+
+```{r maps, fig.height=8}
+print(emb_tl_maps$maps)
+```
+
+## Step 4 vs Step 5 comparison
+
+The table below summarises the key difference between the two transfer
+learning approaches. Lower RMSE and less-negative R² indicate better
+bias-corrected predictions for the local site.
+
+```{r comparison}
+step4 <- tryCatch(
+  tar_read(tl_maps, store = "_targets_transfer")$summary,
+  error = function(e) NULL
+)
+
+if (!is.null(step4)) {
+  step4_slim <- step4 |>
+    select(depth_cm, cv_rmse_tl, cv_r2_tl) |>
+    rename(wadoux_rmse = cv_rmse_tl, wadoux_r2 = cv_r2_tl)
+
+  summary_df |>
+    select(depth_cm, cv_rmse_tl, cv_r2_tl) |>
+    rename(emb_rmse = cv_rmse_tl, emb_r2 = cv_r2_tl) |>
+    left_join(step4_slim, by = "depth_cm") |>
+    mutate(
+      rmse_delta = round(emb_rmse - wadoux_rmse, 4),
+      r2_delta   = round(emb_r2   - wadoux_r2,   3),
+      better     = ifelse(rmse_delta < 0, "Embedding", "Wadoux")
+    ) |>
+    kable(
+      col.names = c("Depth cm", "Emb RMSE", "Emb R²",
+                    "Wadoux RMSE", "Wadoux R²",
+                    "ΔRMSE", "ΔR²", "Better"),
+      caption = "Step 4 (Wadoux) vs Step 5 (Embedding) LOCO CV"
+    )
+} else {
+  cat("Step 4 store not found — run _targets_transfer pipeline to enable comparison.")
+}
+```
+
+## How to use these outputs
+
+The embedding-weighted rasters are written to `outputs/transfer/` with the
+same 4-band structure as Step 4 (Global Prior, Transfer Final, Local Only,
+Difference per depth). Use **Transfer Final** for VM0033 reporting.
+
+To generate 90% prediction intervals:
+
+```r
+m  <- emb_tl_models$models[["7.5"]]
+se <- sqrt(m$bias_se^2 + m$residual_sd^2)
+z  <- qnorm(0.95)   # one-sided 95% = two-sided 90% CI
+# For a pixel with transfer_final prediction p:
+lower <- p - z * se
+upper <- p + z * se
+```
+
+**Next steps:**
+
+- Compare Step 4 and Step 5 spatial patterns — do they agree on high/low
+  carbon zones, or diverge in specific habitat types?
+- If embeddings improve LOCO CV RMSE, adopt as primary method for VM0033.
+- Consider Option 2 (cluster-based pixel-wise weights) if the AOI shows
+  strong spatial heterogeneity in the embedding heatmap.
