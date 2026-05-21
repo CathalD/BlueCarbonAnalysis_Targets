@@ -172,7 +172,11 @@ stopifnot(length(CANONICAL_BANDS) == 27L)
       normalizedDifference(c("B8", "B4"))
   }
 
-  # "nd" → reduce(stdDev()) → "nd_stdDev" → rename → "NDVI_stdDev"
+  # Compute stdDev as sqrt(variance) rather than reduce(stdDev()) directly.
+  # Both are mathematically equivalent but variance() → sqrt() avoids a GEE
+  # issue where reduce(stdDev()) silently returns a masked image when the
+  # computation graph is complex (globally distributed points in one batch).
+  # "nd" → variance → "nd_variance" → sqrt → rename → "NDVI_stdDev"
   ee$ImageCollection("COPERNICUS/S2_SR_HARMONIZED")$
     filterDate(.S2_START, .S2_END)$
     filterBounds(region)$                                              # spatial filter first
@@ -180,8 +184,8 @@ stopifnot(length(CANONICAL_BANDS) == 27L)
     filter(ee$Filter$calendarRange(5, 9, "month"))$
     select(.S2_BANDS_NDVI)$
     map(process)$
-    reduce(ee$Reducer$stdDev())$
-    rename("NDVI_stdDev")
+    reduce(ee$Reducer$variance())$
+    sqrt()$rename("NDVI_stdDev")
 }
 
 
