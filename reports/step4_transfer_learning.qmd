@@ -128,6 +128,43 @@ local ecosystem.
 print(tl_maps$validation)
 ```
 
+## Domain similarity analysis
+
+The Wadoux instance-weighting step identifies which global cores resemble
+the local site based on shared remote sensing covariates. The plots below
+diagnose how well the global database covers the local environment.
+
+### Weight distribution
+
+Each point is one global core. Cores **above the dashed line** (weight > 1)
+are more similar to the local site and receive greater influence over the
+global random forest. Cores below the line are down-weighted.
+A tight cluster near 1.0 means the global database is diverse and few
+cores are truly similar; a spread toward high weights means the global data
+contains many locally-relevant analogues.
+
+```{r weight-dist, fig.height=4}
+print(tl_maps$weights)
+```
+
+### Covariate similarity heatmap
+
+Rows are individual global cores, sorted by Wadoux weight — the most
+similar global cores appear at the top, just below the local reference
+cores (marked **LOCAL ★**). The horizontal line separates local from global.
+
+Columns are the bridge variables used by the domain classifier, z-scored
+so that red = high relative to the combined dataset, blue = low.
+
+A row of global cores that shares the same colour pattern as the local rows
+is environmentally similar. Columns where global and local colours consistently
+diverge identify covariates where the local site sits outside the global
+training distribution — these are candidates for targeted field sampling.
+
+```{r heatmap, fig.height=9}
+print(tl_maps$heatmap)
+```
+
 ## How to use these outputs
 
 **For VM0033 reporting:**

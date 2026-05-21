@@ -352,6 +352,18 @@ train_tl <- function(tl_data, cfg) {
                     bias_se, sqrt(residual_var)))
 
     # ── Assemble model object ────────────────────────────────────────────────
+
+    # Domain data stored for similarity plots — lightweight data.frame only
+    bridge_vars_used <- bv_red   # always use reduced set for domain classifier
+    domain_data <- dplyr::bind_rows(
+      g_data |>
+        dplyr::select(core_id, dplyr::all_of(bridge_vars_used)) |>
+        dplyr::mutate(weight = wadoux_w, p_similarity = p_target, source = "global"),
+      l_data |>
+        dplyr::select(core_id, dplyr::all_of(bridge_vars_used)) |>
+        dplyr::mutate(weight = NA_real_, p_similarity = NA_real_, source = "local")
+    )
+
     models[[dchar]] <- list(
       depth_cm        = d,
       global_model    = rf_global,
@@ -368,6 +380,7 @@ train_tl <- function(tl_data, cfg) {
       cv_r2_global    = r2_global,
       cv_rmse_global  = rmse_global,
       var_importance  = var_imp,
+      domain_data     = domain_data,
       global_medians  = g_medians[names(g_medians) %in% covars],
       scale_factors   = s_factors[names(s_factors) %in% covars],
       method          = "Wadoux_weighted_global_RF_plus_bias_correction"
@@ -498,6 +511,21 @@ plot_tl_maps <- function(tl_rasters, tl_models, cfg) {
     "75"   = "50–100 cm"
   )
 
+  # ── Map ───────────────────────────────────────────────────────────────────
+  # Reconstruct expected band names from model structure so the plot is robust
+  # to GeoTIFF band-name mangling during geotargets serialisation.
+  valid_m  <- Filter(Negate(is.null), tl_models$models)
+  band_sfx <- c("Global_Prior", "Transfer_Final", "Local_Only", "Difference")
+  expected_names <- unlist(lapply(names(valid_m), function(dchar) {
+    paste0("d", gsub("\\.", "_", dchar), "_", band_sfx)
+  }))
+  if (nlyr(tl_rasters) == length(expected_names)) {
+    names(tl_rasters) <- expected_names
+  } else {
+    message(sprintf("[tl] plot_tl_maps: band count mismatch (%d vs %d expected) — using existing names",
+                    nlyr(tl_rasters), length(expected_names)))
+  }
+
   bands_to_show <- c("Global_Prior", "Transfer_Final")
 
   map_df <- bind_rows(lapply(names(depth_labels), function(dl) {
@@ -542,8 +570,8 @@ plot_tl_maps <- function(tl_rasters, tl_models, cfg) {
       )
   }
 
-  # Validation bar chart: LOCO CV R² and RMSE, TL vs global-only
-  summary_df  <- tl_models$summary
+  # ── LOCO CV validation bar chart ──────────────────────────────────────────
+  summary_df   <- tl_models$summary
   p_validation <- ggplot() + theme_void()
 
   if (nrow(summary_df) > 0) {
@@ -552,7 +580,7 @@ plot_tl_maps <- function(tl_rasters, tl_models, cfg) {
       pivot_longer(-depth_cm, names_to = "key", values_to = "value") |>
       mutate(
         stat  = ifelse(grepl("r2",   key), "R² (LOCO CV)",    "RMSE kg/m² (LOCO CV)"),
-        model = ifelse(grepl("global", key), "Global only",         "Transfer (bias-corrected)")
+        model = ifelse(grepl("global", key), "Global only", "Transfer (bias-corrected)")
       ) |>
       filter(!is.na(value))
 
@@ -573,5 +601,164 @@ plot_tl_maps <- function(tl_rasters, tl_models, cfg) {
     }
   }
 
-  list(maps = p_maps, validation = p_validation, summary = summary_df)
+  # ── Wadoux weight distribution ────────────────────────────────────────────
+  # Shows how many global cores are genuinely similar (weight > 1) vs dissimilar.
+  p_weights <- .plot_wadoux_weights(valid_m, depth_labels)
+
+  # ── Covariate similarity heatmap ──────────────────────────────────────────
+  # Rows = global cores (sorted by weight, most similar at top) + local reference.
+  # Columns = bridge variables (z-scored). Shows WHICH covariates drive similarity.
+  p_heatmap <- .plot_covariate_heatmap(valid_m, depth_labels)
+
+  list(
+    maps       = p_maps,
+    validation = p_validation,
+    weights    = p_weights,
+    heatmap    = p_heatmap,
+    summary    = summary_df
+  )
+}
+
+
+# ── Similarity helper: Wadoux weight distribution ─────────────────────────────
+.plot_wadoux_weights <- function(valid_models, depth_labels) {
+  suppressPackageStartupMessages({ library(dplyr); library(ggplot2) })
+
+  all_weights <- bind_rows(lapply(names(valid_models), function(dchar) {
+    m  <- valid_models[[dchar]]
+    dd <- m$domain_data
+    if (is.null(dd)) return(NULL)
+    dd |>
+      filter(source == "global") |>
+      mutate(depth_label = depth_labels[[gsub("\\.", "_", dchar)]] %||% dchar)
+  }))
+
+  if (nrow(all_weights) == 0) return(ggplot() + theme_void())
+
+  # Ordered factor so depths appear left-to-right from shallow to deep
+  all_weights$depth_label <- factor(all_weights$depth_label,
+                                    levels = unname(depth_labels))
+
+  ggplot(all_weights, aes(x = depth_label, y = weight, colour = weight)) +
+    geom_jitter(width = 0.18, size = 2, alpha = 0.75) +
+    geom_hline(yintercept = 1, linetype = "dashed", colour = "grey40", linewidth = 0.6) +
+    scale_colour_gradient(low = "grey65", high = "#c05000",
+                          name = "Weight", trans = "log10") +
+    scale_y_log10(labels = scales::label_number(accuracy = 0.1)) +
+    theme_bw(base_size = 11) +
+    theme(legend.position = "right") +
+    labs(
+      title    = "Wadoux instance weights — global training cores",
+      subtitle = "Points above dashed line (weight > 1) are more similar to the local site",
+      x = "VM0033 depth interval", y = "Weight (log₁₀ scale)"
+    )
+}
+
+
+# ── Similarity helper: covariate heatmap ─────────────────────────────────────
+.plot_covariate_heatmap <- function(valid_models, depth_labels,
+                                    top_n = 25L, max_depths = 2L) {
+  suppressPackageStartupMessages({ library(dplyr); library(tidyr); library(ggplot2) })
+
+  # Use the first max_depths models (shallowest depths have the most data)
+  use_depths <- head(names(valid_models), max_depths)
+
+  heatmap_rows <- bind_rows(lapply(use_depths, function(dchar) {
+    m  <- valid_models[[dchar]]
+    dd <- m$domain_data
+    if (is.null(dd)) return(NULL)
+
+    dl <- depth_labels[[gsub("\\.", "_", dchar)]] %||% dchar
+
+    bridge_vars <- setdiff(names(dd), c("core_id", "weight", "p_similarity", "source"))
+
+    global_dd <- dd |> filter(source == "global") |> arrange(desc(weight))
+    local_dd  <- dd |> filter(source == "local")
+
+    # Abbreviate core_id for axis: last segment, capped at 12 chars
+    abbrev <- function(x) substr(sub("^[^_]+_", "", x), 1L, 12L)
+
+    bind_rows(
+      head(global_dd, top_n) |>
+        mutate(
+          row_label  = paste0(abbrev(core_id), " (", round(weight, 1), "×)"),
+          sort_order = -weight,
+          source_grp = "Global core"
+        ),
+      local_dd |>
+        mutate(
+          row_label  = paste0("LOCAL ★ ", abbrev(core_id)),
+          sort_order = -999,
+          source_grp = "Local core"
+        )
+    ) |>
+      mutate(depth_label = dl) |>
+      select(row_label, sort_order, source_grp, depth_label, all_of(bridge_vars))
+  }))
+
+  if (nrow(heatmap_rows) == 0) return(ggplot() + theme_void())
+
+  bridge_vars <- setdiff(names(heatmap_rows),
+                         c("row_label", "sort_order", "source_grp", "depth_label"))
+
+  # Z-score each variable within each depth panel so colours are comparable
+  heatmap_rows <- heatmap_rows |>
+    group_by(depth_label) |>
+    mutate(across(all_of(bridge_vars), ~ {
+      mn <- mean(.x, na.rm = TRUE); s <- sd(.x, na.rm = TRUE)
+      if (is.na(s) || s == 0) 0 else (.x - mn) / s
+    })) |>
+    ungroup()
+
+  long_df <- heatmap_rows |>
+    pivot_longer(all_of(bridge_vars), names_to = "variable", values_to = "z_score")
+
+  # Factor: local cores at top (sort_order -999), global sorted by weight below
+  row_order <- heatmap_rows |>
+    arrange(depth_label, sort_order) |>
+    pull(row_label) |>
+    unique() |>
+    rev()   # rev() so ggplot y-axis shows top of list at the top
+
+  long_df$row_label   <- factor(long_df$row_label,   levels = row_order)
+  long_df$depth_label <- factor(long_df$depth_label, levels = unname(depth_labels))
+
+  # Clean variable names for axis
+  long_df$variable <- gsub("_median|_mean|_m$", "", long_df$variable)
+
+  # Horizontal separator between local and global rows
+  n_local_per_depth <- heatmap_rows |>
+    filter(source_grp == "Local core") |>
+    group_by(depth_label) |>
+    summarise(n = n(), .groups = "drop") |>
+    pull(n) |>
+    max()
+
+  ggplot(long_df, aes(x = variable, y = row_label, fill = z_score)) +
+    geom_tile(colour = "white", linewidth = 0.25) +
+    geom_hline(yintercept = n_local_per_depth + 0.5,
+               colour = "black", linewidth = 0.9) +
+    facet_wrap(~depth_label, scales = "free_y", ncol = 1) +
+    scale_fill_gradient2(
+      low     = "#2166ac", mid = "white", high = "#b2182b",
+      midpoint = 0, name = "z-score",
+      limits  = c(-2.5, 2.5), oob = scales::squish
+    ) +
+    scale_x_discrete(position = "top") +
+    theme_minimal(base_size = 9) +
+    theme(
+      axis.text.x  = element_text(angle = 35, hjust = 0, size = 8.5),
+      axis.text.y  = element_text(size = 7),
+      panel.grid   = element_blank(),
+      strip.text   = element_text(face = "bold", size = 9),
+      legend.position = "right"
+    ) +
+    labs(
+      title    = "Covariate similarity heatmap",
+      subtitle = paste0(
+        "Top ", top_n, " global cores by Wadoux weight (most similar at top) + local reference cores\n",
+        "Horizontal line separates local (above) from global (below) | z-scored per variable per depth"
+      ),
+      x = NULL, y = NULL
+    )
 }
