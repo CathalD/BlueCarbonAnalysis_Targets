@@ -44,8 +44,11 @@ lapply(
   source
 )
 
-# ── GEE configuration ─────────────────────────────────────────────────────────
-# GEE cloud project ID — update to match your Google Cloud project.
+# ── Test mode ─────────────────────────────────────────────────────────────────
+# Set TEST_MODE <- TRUE to run on 10 random points from the real dataset before
+# committing to the full extraction. Flip to FALSE for the production run.
+TEST_MODE <- TRUE
+TEST_N    <- 10L
 # Found in the Python notebook: ee.Initialize(project='...')
 GEE_PROJECT <- "north-star-project-470316"
 
@@ -81,6 +84,17 @@ list(
     filter_for_gee(janousek_harmonized, ecosystems = c("EM", "SG"))
   ),
 
+  # ── Phase 1: Subsample for test mode ───────────────────────────────────────
+  tar_target(
+    profiles_for_extraction,
+    if (TEST_MODE) {
+      set.seed(42L)
+      profiles_for_gee[sample(nrow(profiles_for_gee), min(TEST_N, nrow(profiles_for_gee))), ]
+    } else {
+      profiles_for_gee
+    }
+  ),
+
   # ── Phase 2: GEE covariate extraction ──────────────────────────────────────
   # Each target is independently cached — a re-run after a partial failure
   # only re-extracts the failed groups.
@@ -90,22 +104,22 @@ list(
 
   tar_target(
     gee_climate,
-    extract_climate(profiles_for_gee, gee_project = GEE_PROJECT)
+    extract_climate(profiles_for_extraction, gee_project = GEE_PROJECT)
   ),
 
   tar_target(
     gee_topo,
-    extract_topo(profiles_for_gee, gee_project = GEE_PROJECT)
+    extract_topo(profiles_for_extraction, gee_project = GEE_PROJECT)
   ),
 
   tar_target(
     gee_sar,
-    extract_sar(profiles_for_gee, gee_project = GEE_PROJECT)
+    extract_sar(profiles_for_extraction, gee_project = GEE_PROJECT)
   ),
 
   tar_target(
     gee_ndvi_stddev,
-    extract_ndvi_stddev(profiles_for_gee, gee_project = GEE_PROJECT)
+    extract_ndvi_stddev(profiles_for_extraction, gee_project = GEE_PROJECT)
   ),
 
   # S2 raw reflectance (9 bands) + derived indices (5 bands) in a single target.
@@ -113,7 +127,7 @@ list(
   # doubled the number of GEE compute calls for the same imagery.
   tar_target(
     gee_s2,
-    extract_s2_all(profiles_for_gee, gee_project = GEE_PROJECT)
+    extract_s2_all(profiles_for_extraction, gee_project = GEE_PROJECT)
   ),
 
   # ── Phase 3: Combine all extractions ───────────────────────────────────────
@@ -122,7 +136,7 @@ list(
   tar_target(
     global_covariates,
     combine_covariates(
-      profiles_for_gee,
+      profiles_for_extraction,
       topo    = gee_topo,
       sar     = gee_sar,
       ndvi_sd = gee_ndvi_stddev,
