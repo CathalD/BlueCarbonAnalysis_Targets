@@ -44,19 +44,5 @@ initialize_gee <- function(project = NULL) {
 }
 
 
-# ---------------------------------------------------------------------------
-# profiles_to_sf()
-# ---------------------------------------------------------------------------
-# Converts a data.frame with latitude/longitude columns to an sf POINT
-# object in WGS84, keeping only profile_id and dataset as properties
-# (to keep GEE feature collections lean).
-# ---------------------------------------------------------------------------
-profiles_to_sf <- function(profiles_df) {
-  suppressPackageStartupMessages(library(sf))
-
-  sf::st_as_sf(
-    profiles_df[, c("profile_id", "dataset", "longitude", "latitude")],
-    coords = c("longitude", "latitude"),
-    crs    = 4326L
-  )
-}
+# Note: conversion of profiles to ee.FeatureCollection is handled directly
+# in gee_covariates.R via .df_to_ee_fc() — no sf/geojsonio dependency needed.
