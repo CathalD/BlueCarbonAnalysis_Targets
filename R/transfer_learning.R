@@ -473,7 +473,7 @@ predict_tl_rasters <- function(tl_models, covar_file) {
   if (length(depth_rasters) == 0)
     stop("[tl] No rasters produced. Check that raster band names match model predictors.")
 
-  combined <- do.call(c, depth_rasters)
+  combined <- terra::rast(depth_rasters)
 
   out_dir <- "outputs/transfer"
   dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
