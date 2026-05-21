@@ -232,10 +232,25 @@ stopifnot(length(CANONICAL_BANDS) == 27L)
 # INTERNAL HELPERS — batch extraction engine
 # =============================================================================
 
+# Build an ee.FeatureCollection directly from a data.frame's lat/lon columns.
+# Mirrors the Python notebook's loop exactly — no sf or geojsonio required.
+.df_to_ee_fc <- function(df) {
+  features <- lapply(seq_len(nrow(df)), function(i) {
+    row  <- df[i, ]
+    geom <- ee$Geometry$Point(c(as.numeric(row$longitude), as.numeric(row$latitude)))
+    ee$Feature(geom, list(
+      profile_id = as.character(row$profile_id),
+      dataset    = as.character(row$dataset)
+    ))
+  })
+  ee$FeatureCollection(features)
+}
+
+
 # Generic batched reduceRegions for a pre-built ee.Image.
 # Returns data.frame with profile_id + extracted band columns.
 .extract_batch <- function(image, profiles_df, name, batch_size = 100L, scale = 30L) {
-  suppressPackageStartupMessages({ library(dplyr); library(sf) })
+  suppressPackageStartupMessages(library(dplyr))
 
   n         <- nrow(profiles_df)
   n_batches <- ceiling(n / batch_size)
@@ -248,8 +263,7 @@ stopifnot(length(CANONICAL_BANDS) == 27L)
   for (i in seq(1L, n, by = batch_size)) {
     end_idx   <- min(i + batch_size - 1L, n)
     batch_df  <- profiles_df[i:end_idx, ]
-    batch_sf  <- profiles_to_sf(batch_df)
-    fc        <- rgee::sf_as_ee(batch_sf)
+    fc        <- .df_to_ee_fc(batch_df)
     batch_num <- ceiling(i / batch_size)
 
     tryCatch({
@@ -288,7 +302,7 @@ stopifnot(length(CANONICAL_BANDS) == 27L)
 # band_fn : function(s2_median_image) → ee.Image with renamed bands
 .extract_batch_s2 <- function(profiles_df, name, band_fn,
                                batch_size = 25L, scale = 30L) {
-  suppressPackageStartupMessages({ library(dplyr); library(sf) })
+  suppressPackageStartupMessages(library(dplyr))
 
   n         <- nrow(profiles_df)
   n_batches <- ceiling(n / batch_size)
@@ -301,8 +315,7 @@ stopifnot(length(CANONICAL_BANDS) == 27L)
   for (i in seq(1L, n, by = batch_size)) {
     end_idx   <- min(i + batch_size - 1L, n)
     batch_df  <- profiles_df[i:end_idx, ]
-    batch_sf  <- profiles_to_sf(batch_df)
-    fc        <- rgee::sf_as_ee(batch_sf)
+    fc        <- .df_to_ee_fc(batch_df)
     batch_num <- ceiling(i / batch_size)
 
     tryCatch({
