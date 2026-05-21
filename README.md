@@ -1,566 +1,619 @@
-# Blue Carbon analysis, mapping and reporting workflow
+# Blue Carbon Analysis — Spatial Mapping and VM0033 Reporting
 
-**Date:** January, 2026
-**Language:** R
-**Platform:** RStudio
+**Language:** R · **Orchestration:** `targets` · **Updated:** May 2026
 
------
+---
 
 ## Table of Contents
 
-1. [Running from RStudio via GitHub](#running-from-rstudio-via-github)
-2. [Overview](#overview)
-3. [Quick Guide (targets workflow)](#quick-guide-targets-workflow)
-4. [Required Inputs](#required-inputs)
-5. [Setting Up Your Project](#setting-up-your-project)
-6. [Expected Outputs](#expected-outputs)
-7. [Implementation Guide](#implementation-guide)
-8. [References](#references)
-9. [Appendix A - Scientific Foundation](#appendix-a---scientific-foundation)
+1. [What Is Blue Carbon?](#what-is-blue-carbon)
+2. [What This Workflow Does](#what-this-workflow-does)
+3. [Scientific Methods at a Glance](#scientific-methods-at-a-glance)
+4. [Getting Started](#getting-started)
+   - [Install packages](#1-install-packages)
+   - [Clone into RStudio](#2-clone-into-rstudio)
+   - [Place your field data](#3-place-your-field-data)
+   - [Configure your site](#4-configure-your-site)
+   - [Authenticate Google Earth Engine](#5-authenticate-google-earth-engine)
+5. [Pipeline 1 — Core Data Preparation](#pipeline-1--core-data-preparation-tar_make)
+6. [Pipeline 2 — Global Covariate Extraction (Pre-Analysis)](#pipeline-2--global-covariate-extraction-pre-analysis)
+7. [Pipeline 3 — Wadoux Transfer Learning](#pipeline-3--wadoux-transfer-learning)
+8. [Pipeline 4 — Embedding Transfer Learning](#pipeline-4--embedding-transfer-learning-model-2)
+9. [Understanding the Outputs](#understanding-the-outputs)
+10. [How to Interpret Your Results](#how-to-interpret-your-results)
+11. [VM0033 Compliance Notes](#vm0033-compliance-notes)
+12. [Tips and Troubleshooting](#tips-and-troubleshooting)
+13. [Scientific References](#scientific-references)
 
 ---
 
-## Running from RStudio via GitHub
+## What Is Blue Carbon?
 
-This workflow uses the [`targets`](https://docs.ropensci.org/targets/) package.
-You do not need to download the repository manually — follow these steps to clone
-it directly into RStudio and run the pipeline.
+**Blue carbon** is the carbon stored in the soils and biomass of coastal ecosystems —
+tidal marshes, mangroves, and seagrasses. These habitats are exceptional carbon sinks:
+they bury organic matter at rates 3–5× higher than terrestrial forests and can store
+carbon for thousands of years.
 
-### Step 1: Install required packages
+When coastal wetlands are degraded or destroyed, this stored carbon is rapidly
+oxidised and released as CO₂. Conversely, protecting or restoring these habitats
+can generate verified, durable carbon credits under standards such as **Verra VM0033**
+("Methodology for Tidal Wetland and Seagrass Restoration").
 
-Open RStudio and run this once:
+Quantifying exactly *how much* carbon is in the soil requires:
 
-```r
-install.packages(c("targets", "tarchetypes", "quarto", "visNetwork",
-                   "dplyr", "readr", "tidyr", "ggplot2", "sf", "rlang"))
+1. **Field sampling** — sediment cores extracted at representative locations across
+   the site, with soil organic carbon (SOC) and bulk density (BD) measured in the lab
+2. **Depth harmonization** — converting irregular sampling intervals to standard
+   VM0033 depth layers (0–15, 15–30, 30–50, 50–100 cm)
+3. **Spatial modeling** — using remote sensing covariates to interpolate between
+   cores and produce a continuous stock map with uncertainty bounds
+
+This workflow automates steps 2 and 3, and optionally leverages global databases
+of thousands of coastal wetland cores to improve predictions at sites with limited
+local sampling (transfer learning).
+
+---
+
+## What This Workflow Does
+
+The analysis is organized as four reproducible pipelines, each with its own
+[`targets`](https://docs.ropensci.org/targets/) store so they can be run and
+updated independently.
+
+| Pipeline | Script | Store | What it produces |
+|----------|--------|-------|-----------------|
+| **1. Core prep** | `_targets.R` | `_targets/` | QA-filtered cores → VM0033-depth harmonized stocks |
+| **2. Pre-analysis** | `_targets_preanalysis.R` | `_targets_preanalysis/` | GEE covariates at 952 global Janousek cores |
+| **3. Wadoux TL** | `_targets_transfer.R` | `_targets_transfer/` | RF-weighted transfer learning prediction maps |
+| **4. Embedding TL** | `_targets_embedding.R` | `_targets_embedding/` | Cosine-similarity-weighted prediction maps (Model 2) |
+
+**Run order:** Pipeline 1 → Pipeline 2 → Pipeline 3 and/or 4 (3 and 4 are independent
+once 1 and 2 are complete).
+
+All reports are rendered as self-contained HTML files in `reports/`.
+
+---
+
+## Scientific Methods at a Glance
+
+### Carbon stock calculation
+
+Each core sample contributes a carbon stock at each depth interval:
+
+```
+carbon_stock (kg C / m²) = SOC (g/kg) × BD (g/cm³) × thickness (cm) / 100
 ```
 
-### Step 2: Clone the repository into RStudio
+Where `thickness` is the VM0033 interval thickness (15, 15, 20, or 50 cm).
+When bulk density was not measured in the lab, ecosystem-specific defaults are used:
+Intertidal Marsh (IM) = 0.8 g/cm³, Near-Marsh (NM) = 0.8 g/cm³, Mudflat (MF) = 0.8 g/cm³.
 
-**Option A — RStudio GUI**
+### Depth harmonization
 
-1. `File` → `New Project` → `Version Control` → `Git`
-2. Paste the repository URL into **Repository URL**
-3. Choose a local folder and click **Create Project**
+Field cores are sampled at irregular intervals (e.g., 0–10, 10–20 cm). VM0033 requires
+standardized intervals (0–15, 15–30, 30–50, 50–100 cm). We use:
 
-RStudio clones the repo and opens it as a project. The `.Rprofile` at the root
-loads automatically, giving you short console aliases (`tm`, `tv`, `tl`, `tm1`).
+- **Equal-area splines** (Bishop et al. 1999) for cores with ≥ 3 samples — fits a
+  continuous SOC–depth curve and re-integrates over the target interval, preserving
+  total mass exactly
+- **Linear interpolation** for 2-sample profiles
+- **Exponential decay** to extrapolate below the deepest measured sample
 
-**Option B — R console**
+### Random forest spatial prediction
+
+For the local site, a random forest model (1000 trees, `ranger`) is trained on
+field cores with 26 remote sensing covariates extracted from Google Earth Engine:
+Sentinel-2 spectral bands, SAR backscatter (Sentinel-1), topographic indices
+(elevation, slope, TWI, channel distance), and water indices (NDVI, LSWI, mNDWI,
+SAVI). The model predicts carbon stock at each 25-metre pixel.
+
+### Transfer learning (Wadoux method — Pipeline 3)
+
+With only 6 local cores, a purely local model is severely data-limited. Transfer
+learning supplements the local data with ~952 globally distributed wetland cores
+from the Janousek et al. coastal carbon database, each described by the same 26
+covariates.
+
+The key question is: *which global cores are most similar to your local site?*
+The Wadoux method trains a random forest probability classifier to distinguish
+local from global samples, and converts the predicted probability into an
+**instance weight** for each global core. Cores that look like your site get high
+weights; dissimilar ones are down-weighted. The weighted global RF is then corrected
+for local bias using the local residuals.
+
+### Transfer learning (Embedding method — Pipeline 4)
+
+Pipeline 4 uses Google's `GOOGLE/SATELLITE_EMBEDDING/V1/ANNUAL` foundation model —
+a 64-dimensional per-pixel embedding derived from Sentinel-2 time series, encoding
+spectral, textural, and phenological information learned from billions of pixels.
+
+Instead of a hand-crafted similarity classifier, we compute the **cosine similarity**
+between each global core's embedding vector and the mean embedding of the local AOI.
+This single number captures the holistic "look" of each site in 64-dimensional
+learned feature space. Similarity is raised to the power α = 5 (sharpening exponent)
+so that only the closest analogues contribute substantially to the weighted model.
+
+> **Key advantage:** No local labels are needed for Stage A — similarity is a
+> direct geometric comparison, not a trained classifier.
+
+---
+
+## Getting Started
+
+### 1. Install packages
+
+Run this once in a fresh R session (R ≥ 4.3 recommended):
 
 ```r
-# Install usethis if needed: install.packages("usethis")
+install.packages(c(
+  "targets", "tarchetypes", "geotargets",
+  "dplyr", "readr", "tidyr", "ggplot2", "sf",
+  "terra", "ranger", "randomForest",
+  "quarto", "visNetwork"
+))
+```
+
+For the transfer learning pipelines you also need `rgee`:
+
+```r
+install.packages("rgee")
+# Python dependency (once per machine):
+rgee::ee_install()
+```
+
+### 2. Clone into RStudio
+
+**Via RStudio GUI:**
+`File` → `New Project` → `Version Control` → `Git` → paste repository URL.
+
+**Via R console:**
+```r
 usethis::create_from_github(
   "cathald/bluecarbonanalysis_targets",
-  destdir = "~/path/to/projects"
+  destdir = "~/projects"
 )
 ```
 
-This clones the repo and opens it as an RStudio project in one step.
+The `.Rprofile` at the repo root loads automatically and gives you four console
+shortcuts (see [Tips and Troubleshooting](#tips-and-troubleshooting)).
 
-### Step 3: Add your data
+### 3. Place your field data
 
-Place your field data CSVs in `Pre-Analysis Data Preparation/data_raw/`:
+Put two CSVs in `Pre-Analysis Data Preparation/data_raw/`:
 
-| File | Description |
-|---|---|
-| `core_locations.csv` | One row per core — `core_id`, `longitude`, `latitude`, `stratum` |
-| `core_samples.csv` | One row per sample — `core_id`, `depth_top_cm`, `depth_bottom_cm`, `soc_g_kg` |
+**`core_locations.csv`** — one row per core:
 
-The pipeline reads directly from `Pre-Analysis Data Preparation/data_raw/`, so keep your data files there.
+| Column | Type | Description |
+|--------|------|-------------|
+| `core_id` | character | Unique core identifier |
+| `latitude` | numeric | Decimal degrees (WGS84) |
+| `longitude` | numeric | Decimal degrees (WGS84) |
+| `stratum` | character | Ecosystem stratum (must match `VALID_STRATA` in config) |
 
-### Step 4: Configure your project
+**`core_samples.csv`** — one row per depth sample:
 
-Open `blue_carbon_config.R` at the project root and edit the project metadata,
-strata names, and QC thresholds for your site. See
-[Setting Up Your Project](#setting-up-your-project) for details.
+| Column | Type | Description |
+|--------|------|-------------|
+| `core_id` | character | Links to core_locations.csv |
+| `depth_top_cm` | numeric | Top of sampled interval (cm) |
+| `depth_bottom_cm` | numeric | Bottom of sampled interval (cm) |
+| `soc_g_kg` | numeric | Soil organic carbon (g C per kg dry soil) |
+| `bulk_density_g_cm3` | numeric | Bulk density (g/cm³); can be `NA` if not measured |
 
-### Step 5: Run the pipeline
+You also need a **local covariate raster** — a multi-band GeoTIFF covering the
+full site extent, exported from Google Earth Engine. Its path is set in
+`blue_carbon_config.R` under `COVARIATE_RASTER`. This file should contain
+the 26 canonical bands listed in `R/preanalysis/gee_covariates.R`.
 
-In the RStudio console:
+### 4. Configure your site
 
-```r
-tm()          # Run all targets (skips anything already up to date)
-tv()          # View the dependency graph in the Viewer pane
-```
-
-Or run Step 1 only:
-
-```r
-tm1()         # Run only the Step 1 Non-Spatial targets
-```
-
-The rendered HTML report will appear at `reports/step1_nonspatial.html`.
-
-### Step 6: Inspect results interactively
+Open `blue_carbon_config.R` at the project root and set:
 
 ```r
-tl(cores_clean)       # Load the QA-passed data into your session
-tl(stratum_summary)   # Load the harmonized summary table
-tl(eda_plots)         # Load the list of EDA plots
-eda_plots$depth_profiles   # View one plot
+PROJECT_NAME    <- "YourSite_2026"
+PROJECT_LOCATION <- "e.g. Chemainus Estuary, British Columbia, Canada"
+VALID_STRATA    <- c("IM", "NM", "MF")   # must match stratum column in CSV
+COVARIATE_RASTER <- "Pre-Analysis Data Preparation/covariates/your_raster.tif"
 ```
 
-### Useful console commands
+The VM0033 depth intervals, BD defaults, and reporting thresholds are pre-configured
+and should only be changed after consulting the methodology documentation.
+
+### 5. Authenticate Google Earth Engine
+
+Required for Pipelines 2, 3, and 4. Run once per machine:
 
 ```r
-tar_outdated()                     # What needs to re-run and why
-tar_make(names = "cores_clean")    # Re-run one target and its dependencies
-tar_read("stratum_summary")        # Read a target without adding to .GlobalEnv
-tar_meta() |> select(name, seconds, error)  # Timing and error status per target
-tar_visnetwork()                   # Dependency graph (green = up to date)
-tar_invalidate("cores_harmonized") # Force one target to re-run next time
-tar_destroy(); tar_make()          # Clear entire cache and start fresh
+library(rgee)
+ee_Initialize(user = "your.email@gmail.com", drive = TRUE)
 ```
 
-### How the dependency graph works
-
-`tar_visnetwork()` shows green (up to date), orange (outdated), red (errored).
-
-**Example — if you change `QC_SOC_MAX` in `blue_carbon_config.R`:**
-
-```
-cfg → orange → cores_clean → orange → eda_plots + cores_harmonized → orange
-→ stratum_summary + report_step1 → orange
-```
-
-`cores_raw` stays **green** — the raw CSV files did not change.
+This opens a browser for OAuth. After authorising, credentials are cached and
+you will not need to repeat this step. For the embedding pipeline (Pipeline 4),
+Drive access is **not** required — embeddings are downloaded directly as GeoTIFFs
+over HTTPS.
 
 ---
 
-## Overview
+## Pipeline 1 — Core Data Preparation (`tar_make()`)
 
-This workflow automates the harmonization, analysis, mapping, and reporting of carbon stocks from Coastal Blue carbon sediments. The system processes field sediment core data through spatial modeling to produce carbon stock estimates with quantified uncertainty.
+This is the foundation of the entire workflow. It must run to completion before
+any other pipeline.
 
-### Analysis Types
+**What it does:**
 
-There are 4 types of spatial analysis this workflow can perform:
+1. Reads and merges `core_locations.csv` and `core_samples.csv`
+2. Applies QA filters: flags missing bulk density, implausible SOC, implausible BD,
+   and strata not in `VALID_STRATA`; fills missing BD with ecosystem defaults
+3. Calculates carbon stocks at each measured depth
+4. Harmonizes all cores to the four VM0033 depth intervals using equal-area splines
+5. Runs exploratory data analysis (depth profiles, stratum comparisons, outlier plots)
+6. Renders an HTML report (`reports/step1_nonspatial.html`)
 
-**A) Basic Reporting** - Ingests individual core data and spatial boundaries, automatically calculates sample carbon data, harmonizes to defined depth intervals, averages carbon stocks across spatial boundaries, and runs spatial interpolation (kriging) to produce a carbon map.
-
-**B) Spatial Extrapolation with Remote Sensing** - Advanced function requiring remote sensing covariates. Runs random-forest machine-learning algorithm to build spatial models reflecting smaller-scale variations across the project boundary.
-
-**C) Bayesian-Based Analysis** - Can be run with A) or B). Requires prior carbon stock data within your project boundary. Updates prior probabilities based on new core data to produce refined carbon maps.
-
-**D) Transfer Learning Analysis** - Can be used with A, B, or C. Uses previous core data to build predictive models by weighting similarity between your project area and existing datasets.
-
----
-
-## Quick Guide (targets workflow)
-
-**Step 1** - Clone the repo into RStudio (see [Running from RStudio via GitHub](#running-from-rstudio-via-github))
-
-**Step 2** - Add your carbon data to `Pre-Analysis Data Preparation/data_raw/` in the same format as `core_locations.csv` and `core_samples.csv`
-
-**Step 3** - Edit `blue_carbon_config.R` at the project root for your site
-
-**Step 4** - Run `tm()` in the RStudio console for the full pipeline, or `tm1()` for Step 1 only
-
-### For Advanced Analysis with Remote Sensing:
-
-**Step 5** - Add covariate files to `BlueCarbon_Workflow_V1.0/covariates` - these should be clipped to the project boundary
-
-**Step 6** - Run Modules P1 and P2
-
-### For Bayesian Analysis:
-
-**Step 7** - Add prior carbon maps to folder `BlueCarbon_Workflow_V1.0/data_prior`
-
-**Step 8** - In `blue_carbon_config.R` document, scroll to section "Bayesian" and change `Bayesian <- FALSE` to `Bayesian <- TRUE`
-
-**Step 9** - Run modules P1, P2 and P3
-
-### For Transfer Learning Analysis:
-
-**Step 10** - Add covariate files to `BlueCarbon_Workflow_V1.0/covariates` - these should be clipped to the project boundary
-
-**Step 11** - Ensure the covariates listed in "covariates" match those used in `global_cores_with_gee_covariates.csv` file
-
-**Step 12** - Run P2 and P4 Modules
-
----
-
-## Required Inputs
-
-### A) Basic Reporting
-
-1. **Carbon stock core locational data** as a spreadsheet in this format:
-
-<img width="864" height="219" alt="Screenshot 2026-02-04 at 12 44 08 PM" src="https://github.com/user-attachments/assets/7e469415-67b8-41da-ab91-b4ce0592c757" />
-
-2. **Carbon stock sample lab data** as a spreadsheet in this format:
-
-<img width="751" height="317" alt="Screenshot 2026-02-04 at 12 45 17 PM" src="https://github.com/user-attachments/assets/caa4a89e-86cb-4530-a9f5-988d41c42425" />
-
-3. **Project boundary and (optional) strata** in one of these formats: GeoJson, CSV, .shp, etc.
-
-### B) Spatial Extrapolation with Remote Sensing Models
-
-*All of above from "Basic reporting" +*
-
-1. **Remote sensing covariates**
-   - Can use any custom set of RS variables as desired
-   - Option to follow Google Earth Engine workflow that automatically extracts covariates
-
-### C) Bayesian-Based Analysis
-
-*All from A) Basic Reporting (optional: can also handle RS input)*
-
-1. **Prior carbon map** in a geoTiff (.tiff) format
-
-### D) Transfer Learning Analysis
-
-*All from B) Spatial extrapolation with remote sensing models*
-
-1. Uses the global dataset from Janousek et al. database
-   - **Option 1:** Use pre-loaded covariates from this script (Link: GEE Python API script)
-   - **Option 2:** Add personal covariates (ensure local and global covariates align)
-   - **Option 3:** Uses Google DeepMind's embedded learning to build a "similarity" matrix for local cores and global dataset
-
----
-
-## Setting Up Your Project
-
-The file `blue_carbon_config.R` is where you configure the workflow settings.
-
-### 1. Change the Project Metadata
-
-<details>
-<summary><b>Click to view configuration code</b></summary>
+**Run it:**
 
 ```r
-# =================
-# PROJECT METADATA
-# =================
-PROJECT_NAME <- "BC_Coastal_BlueCarbon_2024"
-PROJECT_SCENARIO <- "PROJECT"  # Options: BASELINE, PROJECT, CONTROL, DEGRADED
-MONITORING_YEAR <- 2025
-
-# Project location (for documentation)
-PROJECT_LOCATION <- "Chemainus Estuary, British Columbia, Canada"
-PROJECT_DESCRIPTION <- "Blue carbon monitoring to report to funder"
+targets::tar_make()
+# or use the console shortcut:
+tm()
 ```
 
-</details>
-
-### 2. Define Your Stratified Boundaries
-
-<details>
-<summary><b>Click to view stratification configuration code</b></summary>
+**Check progress:**
 
 ```r
-# Valid ecosystem strata (must match GEE stratification tool)
-# FILE NAMING CONVENTION:
-#   Module 05 auto-detects GEE stratum masks using this pattern:
-#   "Stratum Name" → stratum_name.tif in data_raw/gee_strata/
-# Examples:
-#   "Upper Marsh"           → upper_marsh.tif
-#   "Underwater Vegetation" → underwater_vegetation.tif
-#   "Emerging Marsh"        → emerging_marsh.tif
+tv()               # visual dependency graph (green = done, orange = stale)
+tar_meta() |> dplyr::select(name, seconds, error)   # per-target timing and errors
+```
 
-# CUSTOMIZATION OPTIONS:
-#   1. Simple: Edit VALID_STRATA below and export GEE masks with matching names
-#   2. Advanced: Create stratum_definitions.csv in project root for custom file names
-#      and optional metadata (see stratum_definitions_EXAMPLE.csv template)
+**Key targets you can inspect:**
 
-VALID_STRATA <- c(
-  "Mid Marsh",         
-  "Upper Marsh",             
-  "Lower Marsh",
-  "Underwater vegetation"
-)
+```r
+tar_read("cores_raw")         # raw field data after merging
+tar_read("eda_plots")         # list of 6 exploratory plots
+tar_read("cores_harmonized")  # harmonized carbon stocks at VM0033 depths
+```
 
-# Stratum colors for plotting (match GEE tool)
-STRATUM_COLORS <- c(
-  "Mid Marsh" = "#FFFF99",
-  "Upper Marsh" = "#99FF99",
-  "Lower Marsh" = "#33CC33",
-  "Underwater vegetation" = "#FF7F50"
+After this pipeline completes, `_targets/` contains a cached, validated version
+of your field data. Any subsequent change to the input CSVs or config will
+automatically mark downstream targets as stale.
+
+---
+
+## Pipeline 2 — Global Covariate Extraction (Pre-Analysis)
+
+This pipeline extracts the same 26-band remote sensing covariates at each of the
+~952 global Janousek wetland core locations. It runs once and its outputs are used
+by both transfer learning pipelines.
+
+**What it does:**
+
+1. Reads global core lat/lon coordinates from the Janousek database
+2. Sends batched requests to Google Earth Engine to extract:
+   - Sentinel-2 spectral bands (B, G, R, NIR, SWIR1, SWIR2, NDVI, LSWI, mNDWI, SAVI)
+   - Sentinel-1 SAR (VV, VH, VV/VH ratio)
+   - Topography (elevation, slope, TWI, distance to channel, tidal flat probability,
+     coastal distance, elevation relative to MHW)
+   - Climate (MAP, MAT)
+3. Combines all bands, validates against the canonical 26-band schema, and writes
+   `Pre-Analysis Data Preparation/data_raw/CorePoints_Covariates_BC_Canada.csv`
+
+**Run it:**
+
+```r
+targets::tar_make(
+  script = "_targets_preanalysis.R",
+  store  = "_targets_preanalysis"
 )
 ```
 
-</details>
+> **Note on runtime:** GEE extraction for ~952 cores takes 30–90 minutes depending
+> on network conditions. The pipeline uses batches of 5 cores with a 5-minute
+> per-batch timeout and automatic retry. If it stops partway through, re-running
+> `tar_make()` skips any batch that already succeeded.
 
-### 3. Configure Depth Harmonization
+**You only need to run this once.** The output CSV is committed to the repository;
+if you have not modified the Janousek coordinate data or the band list, this
+pipeline will report that all targets are up to date.
 
-For data harmonization, define the depth interval midpoint values (default set to Verra tidal wetland standard depths).
+---
 
-<details>
-<summary><b>Click to view depth configuration code</b></summary>
+## Pipeline 3 — Wadoux Transfer Learning
+
+This pipeline uses the Janousek global database, weighted by spectral similarity
+to your local site, to improve carbon stock predictions at each VM0033 depth.
+
+**What it does:**
+
+1. Harmonizes the Janousek database to VM0033 depth intervals (same spline method
+   as Pipeline 1)
+2. Joins global and local cores with their GEE covariates (bridge variables)
+3. **Stage A:** Trains a random forest probability classifier to separate local from
+   global samples → converts predicted probabilities to instance weights
+4. **Stage B:** Trains a weighted global RF (1000 trees) at each depth midpoint
+5. **Stage C:** Computes mean bias from local residuals; estimates uncertainty via
+   500-replicate bootstrap
+6. **Stage D:** Applies bias correction to global RF predictions and predicts across
+   the local site raster
+7. Runs leave-one-core-out (LOCO) cross-validation to assess transferability
+8. Produces comparison maps and a similarity heatmap
+9. Renders `reports/step4_transfer_learning.html`
+
+**Run it:**
 
 ```r
-# ============================================================================
-# DEPTH CONFIGURATION
-# ============================================================================
-# VM0033 standard depth intervals (cm) - depth midpoints for harmonization
-# These correspond to VM0033 depth layers: 0-15, 15-30, 30-50, 50-100 cm
-VM0033_DEPTH_MIDPOINTS <- c(7.5, 22.5, 40, 75)
-
-# VM0033 depth intervals (cm) - for mass-weighted aggregation
-VM0033_DEPTH_INTERVALS <- data.frame(
-  depth_top = c(0, 15, 30, 50),
-  depth_bottom = c(15, 30, 50, 100),
-  depth_midpoint = c(7.5, 22.5, 40, 75),
-  thickness_cm = c(15, 15, 20, 50)
-)
-
-# Standard depths for harmonization (VM0033 midpoints are default)
-STANDARD_DEPTHS <- VM0033_DEPTH_MIDPOINTS
-
-# Fine-scale depth intervals (optional, for detailed analysis)
-FINE_SCALE_DEPTHS <- c(0, 5, 10, 15, 20, 25, 30, 40, 50, 75, 100)
-
-# Maximum core depth (cm)
-MAX_CORE_DEPTH <- 100
-
-# Key depth intervals for reporting (cm)
-REPORTING_DEPTHS <- list(
-  surface = c(0, 30),      # Top 30 cm (most active layer)
-  subsurface = c(30, 100)  # 30-100 cm (long-term storage)
+targets::tar_make(
+  script = "_targets_transfer.R",
+  store  = "_targets_transfer"
 )
 ```
 
-</details>
+**Key targets:**
 
----
-
-## Expected Outputs
-
-### A) Basic Reporting
-
-**Module P2_02: Exploratory Data Analysis**
-- Generates summary statistics by stratum
-- Creates depth profile visualizations
-- Identifies outliers and data quality issues
-- Produces diagnostic plots
-
-**Module P2_03: Depth Harmonization**
-- Implements equal-area spline functions
-- Standardizes to depth intervals (Default aligns with VM0033 Methods: 7.5, 22.5, 40, 75 cm)
-- Extrapolates to maximum depth (100 cm)
-- Validates mass balance
-- Exports harmonized profiles for spatial modeling
-
-**Module P2_04: Spatial Predictions - Kriging**
-- Automated variogram modeling
-- Universal kriging predictions
-- Cross-validation assessment
-- Uncertainty quantification via kriging variance
-- Sample size power analysis
-
-### B) Remote Sensing Informed Reporting
-
-**Module P2_05: Spatial Predictions - Random Forest**
-- Integration with Google Earth Engine covariates
-- Random Forest model training
-- Area of Applicability assessment
-- Spatial cross-validation
-- Variable importance analysis
-
-**Module P2_06: Carbon Stock Calculation**
-- Aggregates depth-specific predictions
-- Calculates total carbon stocks (0-100 cm)
-- Compares Kriging vs. Random Forest estimates
-- Generates carbon stock maps
-- Exports summary tables by stratum
-
-**Module P2_07: MMRV Reporting**
-- Generates VM0033 verification package
-- Creates comprehensive HTML reports
-- Exports spatial data for GIS verification
-- Provides sampling recommendations
-- Produces quality assurance documentation
-
----
-
-## Implementation Guide
-
-*(This section can be expanded with step-by-step instructions for running each module)*
-
----
-
-## References
-
-*(Add your references here as needed)*
-
----
-
-## Appendix A - Scientific Foundation
-
-### Depth Harmonization
-
-**Equal-Area Spline Functions** (Bishop et al. 1999; Malone et al. 2009):
-- Fits continuous depth functions to irregular sampling intervals
-- Preserves mass balance (∫SOC·BD·dz constant)
-- Prevents artifacts from interval averaging
-- Enables standardized depth reporting for VM0033 compliance
-
-**Hybrid Approach** (implemented in Module P2_03):
-- Equal-area splines for profiles with ≥3 samples
-- Mass-preserving linear interpolation for 2-sample profiles
-- Exponential decay extrapolation beyond deepest sample (Holmquist et al. 2018)
-
-<details>
-<summary><b>Click to view references</b></summary>
-
-- Bishop, T.F.A., McBratney, A.B., & Laslett, G.M. (1999). "Modelling soil attribute depth functions with equal-area quadratic smoothing splines." *Geoderma*, 91(1-2), 27-45. https://doi.org/10.1016/S0016-7061(99)00003-8
-- Malone, B.P., McBratney, A.B., Minasny, B., & Laslett, G.M. (2009). "Mapping continuous depth functions of soil carbon storage and available water capacity." *Geoderma*, 154(1-2), 138-152. https://doi.org/10.1016/j.geoderma.2009.10.007
-- Holmquist, J.R., Windham-Myers, L., Blaauw, M., et al. (2018). "Accuracy and Precision of Tidal Wetland Soil Carbon Mapping in the Conterminous United States." *Scientific Reports*, 8(1), 9478. https://doi.org/10.1038/s41598-018-26948-7
-
-</details>
-
----
-
-### Spatial Interpolation - Kriging
-
-**Universal Kriging** (Goovaerts 1997; Webster & Oliver 2007):
-- Geostatistical method accounting for spatial autocorrelation
-- Variogram modeling captures spatial dependency structure
-- Best Linear Unbiased Prediction (BLUP) with uncertainty estimates
-- Suitable when covariates unavailable or sample size limited
-
-**Implementation** (Module P2_04):
-- Automated variogram fitting (exponential, spherical, Gaussian models)
-- Cross-validation for model selection
-- Prediction standard errors for uncertainty quantification
-
-<details>
-<summary><b>Click to view references</b></summary>
-
-- Goovaerts, P. (1997). *Geostatistics for Natural Resources Evaluation*. Oxford University Press.
-- Webster, R., & Oliver, M.A. (2007). *Geostatistics for Environmental Scientists*, 2nd Edition. Wiley. https://doi.org/10.1002/9780470517277
-
-</details>
-
----
-
-### Spatial Interpolation - Random Forest
-
-**Machine Learning Approach** (Breiman 2001; Hengl et al. 2018):
-- Ensemble decision tree method using remote sensing covariates
-- Handles non-linear relationships and variable interactions
-- Feature importance quantification
-- Area of Applicability assessment (Meyer & Pebesma 2021)
-
-**Implementation** (Module P2_05):
-- Integrates Landsat, Sentinel-1 SAR, topographic data
-- Ranger package for efficient random forest
-- CAST package for spatial cross-validation and AOA
-- Uncertainty via quantile regression forests
-
-<details>
-<summary><b>Click to view references</b></summary>
-
-- Breiman, L. (2001). "Random Forests." *Machine Learning*, 45(1), 5-32. https://doi.org/10.1023/A:1010933404324
-- Hengl, T., Nussbaum, M., Wright, M.N., Heuvelink, G.B.M., & Gräler, B. (2018). "Random forest as a generic framework for predictive modeling of spatial and spatio-temporal variables." *PeerJ*, 6, e5518. https://doi.org/10.7717/peerj.5518
-- Meyer, H., & Pebesma, E. (2021). "Predicting into unknown space? Estimating the area of applicability of spatial prediction models." *Methods in Ecology and Evolution*, 12(9), 1620-1633. https://doi.org/10.1111/2041-210X.13650
-- https://soilmapper.org/
-
-</details>
-
----
-
-### Bayesian Integration (Optional)
-
-**Prior Knowledge Transfer** (Wadoux et al. 2021):
-- Combines site-specific likelihood with global prior distribution
-- Reduces uncertainty when local samples limited
-- Weight calibration via empirical Bayes or cross-validation
-
-**Implementation** (Part 3 modules):
-- Global database as informative prior (Holmquist et al. 2018; Macreadie et al. 2019)
-- Bayesian updating via conjugate Normal-Normal framework
-- Posterior mean and credible intervals for conservative estimates
-
-<details>
-<summary><b>Click to view references</b></summary>
-
-- Wadoux, A.M.J.-C., Brus, D.J., & Heuvelink, G.B.M. (2021). "Accounting for non-stationary variance in geostatistical mapping of soil properties." *Geoderma*, 324, 114138. https://doi.org/10.1016/j.geoderma.2018.03.010
-- Holmquist, J.R., et al. (2018). "Coastal and Marine Ecological Classification Standard." NOAA Technical Memorandum NOS NCCOS 258.
-
-</details>
-
----
-
-### Transfer Learning (Optional)
-
-**Global-to-Local Knowledge Transfer** (Module P4_05):
-- Instance weighting (Wadoux et al. 2021) to identify relevant global samples
-- Hierarchical modeling across depth intervals
-- Bias correction for local conditions
-
-**Global Database:**
-- Coastal Carbon Network synthesis (Holmquist et al. 2018)
-- Smithsonian MarineGEO global cores
-- Harmonized to VM0033 depths
-
-<details>
-<summary><b>Click to view references</b></summary>
-
-- Wadoux, A.M.J.-C., Samuel-Rosa, A., Poggio, L., & Mulder, V.L. (2021). "A note on knowledge discovery and machine learning in digital soil mapping." *European Journal of Soil Science*, 71(2), 133-136. https://doi.org/10.1111/ejss.12909
-
-</details>
-
----
-
-### Carbon Stock Calculation
-
-**Methodology** (Howard et al. 2014; IPCC 2014):
-
-<details>
-<summary><b>Click to view calculation formula</b></summary>
-
-```
-Carbon Stock (kg C/m²) = ∫[SOC (g/kg) × BD (g/cm³) × 10] dz
-
-Where:
-  SOC = Soil organic carbon concentration (g C / kg dry soil)
-  BD  = Bulk density (g dry soil / cm³)
-  dz  = Depth increment (cm)
-  10  = Unit conversion factor
+```r
+targets::tar_read("tl_models",  store = "_targets_transfer")  # per-depth model objects
+targets::tar_read("tl_maps",    store = "_targets_transfer")  # list of ggplot objects
+targets::tar_read("tl_rasters", store = "_targets_transfer")  # SpatRaster (4 bands × 4 depths)
 ```
 
-</details>
+---
 
-**Bulk Density Handling:**
-- Measured BD used when available
-- Ecosystem-specific defaults (Morris et al. 2016) when missing:
-  - Saltmarsh (EM): 0.52 g/cm³
-  - Seagrass (SG): 0.89 g/cm³
-  - Mangrove (FL): 0.38 g/cm³
+## Pipeline 4 — Embedding Transfer Learning (Model 2)
 
-<details>
-<summary><b>Click to view references</b></summary>
+This is an alternative transfer learning approach that replaces the Wadoux
+RF classifier with **embedding cosine similarity** from Google's foundation
+model satellite embeddings. It runs independently from Pipeline 3.
 
-- Howard, J., Hoyt, S., Isensee, K., Pidgeon, E., & Telszewski, M. (2014). *Coastal Blue Carbon: Methods for Assessing Carbon Stocks and Emissions Factors in Mangroves, Tidal Salt Marshes, and Seagrass Meadows*. Conservation International, Intergovernmental Oceanographic Commission of UNESCO, International Union for Conservation of Nature. Arlington, Virginia, USA.
-- IPCC (2014). *2013 Supplement to the 2006 IPCC Guidelines for National Greenhouse Gas Inventories: Wetlands*. Hiraishi, T., Krug, T., Tanabe, K., et al. (eds). IPCC, Switzerland.
-- Morris, J.T., Barber, D.C., Callaway, J.C., et al. (2016). "Contributions of organic and inorganic matter to sediment volume and accretion in tidal wetlands at steady state." *Earth's Future*, 4(4), 110-121. https://doi.org/10.1002/2015EF000334
+**What it does:**
 
-</details>
+1. **Phase 1 — GEE extraction:**
+   - Extracts a 64-dimensional embedding vector at each of the ~952 global core
+     locations (`GOOGLE/SATELLITE_EMBEDDING/V1/ANNUAL`, averaged 2023–2025)
+   - Downloads the same 64-band embedding raster over the local AOI extent
+     (split into 4 chunks of 16 bands to stay under GEE's 48 MB download limit)
+   - Writes `outputs/embedding/aoi_embedding_raster.tif`
+
+2. **Phase 2 — Cosine similarity weights:**
+   - Computes the mean embedding vector across all pixels in the local AOI
+   - Computes cosine similarity between each global core's embedding and the AOI mean
+   - Applies sharpening exponent α = 5: `weight = sim^5`, normalized so mean = 1
+
+3. **Phase 3 — Weighted transfer learning:**
+   - Same four-stage model as Pipeline 3, but instance weights come from step 2
+     instead of a Wadoux RF classifier
+   - Produces identical output format: 4-band GeoTIFFs per depth interval
+   - Renders `reports/step5_embedding_tl.html`, including a side-by-side comparison
+     of Pipeline 3 (Wadoux) vs Pipeline 4 (Embedding) LOCO CV performance
+
+**Run it:**
+
+```r
+targets::tar_make(
+  script = "_targets_embedding.R",
+  store  = "_targets_embedding"
+)
+```
+
+> **Prerequisites:** Pipeline 1 must be complete. The GEE project ID is set at the
+> top of `_targets_embedding.R` — update `GEE_PROJECT` to your own project if needed.
 
 ---
 
-### Uncertainty Quantification
+## Understanding the Outputs
 
-**Conservative Approach** (IPCC 2006, VM0033):
-- Propagation of measurement, spatial, and model uncertainties
-- Lower 95% confidence bound for crediting
-- Monte Carlo simulation when analytical propagation infeasible
+### Reports (HTML)
 
-**Sources of Uncertainty:**
+| File | From | Contents |
+|------|------|----------|
+| `reports/step1_nonspatial.html` | Pipeline 1 | QA flags, depth profiles, stratum summaries, harmonized stocks |
+| `reports/step3_random_forest.html` | Pipeline 1 | Local RF variable importance, CV, prediction map |
+| `reports/step4_transfer_learning.html` | Pipeline 3 | Wadoux weights, LOCO CV, spatial maps, similarity heatmap |
+| `reports/step5_embedding_tl.html` | Pipeline 4 | Cosine similarity, LOCO CV, spatial maps, Step 4 vs 5 comparison |
 
-<details>
-<summary><b>Click to view uncertainty sources</b></summary>
+### Prediction rasters (GeoTIFF)
 
-1. **Measurement:** Lab analytical precision (typically 2-5% for SOC)
-2. **Spatial:** Kriging variance or RF quantile spread
-3. **Model:** Cross-validation RMSE, variogram uncertainty
-4. **Temporal:** Inter-annual variability (if multi-year data)
+Both transfer learning pipelines write one GeoTIFF per depth to `outputs/transfer/`.
+Each file has **four bands**:
 
-</details>
+| Band name | Description |
+|-----------|-------------|
+| `dX_Global_Prior` | Weighted global RF prediction before bias correction |
+| `dX_Transfer_Final` | Global prior + local bias correction → **use this for VM0033** |
+| `dX_Local_Only` | Mean local carbon stock (spatial constant — no spatial model) |
+| `dX_Difference` | Transfer Final minus Global Prior (magnitude of local correction) |
 
+Where `X` is the depth midpoint with `.` replaced by `_` (e.g. `d7_5`, `d22_5`, `d40`, `d75`).
 
+### Embedding raster
 
+`outputs/embedding/aoi_embedding_raster.tif` — 64-band GeoTIFF at the local AOI
+extent, with bands named `emb_1` … `emb_64`. Used internally for cosine similarity
+computation; can also be used for unsupervised habitat clustering.
 
+### Model objects (in `_targets` stores)
 
+You can load any target directly from R:
 
+```r
+# Local RF models (Pipeline 1):
+rf <- targets::tar_read("rf_models")           # list of per-depth ranger objects
+rf$`7.5`$model                                 # ranger object for 0–15 cm
+
+# Transfer learning models (Pipeline 3):
+m  <- targets::tar_read("tl_models", store = "_targets_transfer")
+m$models[["7.5"]]$bias_correction              # bias correction term in kg/m²
+m$models[["7.5"]]$bias_se                      # bootstrap SE of bias
+m$models[["7.5"]]$cv_r2_tl                     # LOCO CV R² (transfer-corrected)
+m$models[["7.5"]]$cv_r2_global                 # LOCO CV R² (global prior only)
+```
+
+---
+
+## How to Interpret Your Results
+
+### LOCO cross-validation
+
+The **leave-one-core-out (LOCO) CV** is the most important quality metric for
+the transfer learning models. At each fold, one local core is held out and the
+bias correction is estimated from the remaining local cores. This simulates
+"would this model have performed well at a core we hadn't yet sampled?"
+
+- **R² > 0.5** indicates good transferability at that depth
+- **RMSE** is in kg C / m² — compare against the local mean carbon stock to
+  interpret as a fraction
+- **Transfer Final vs Global Prior:** if LOCO CV RMSE is lower for Transfer Final
+  than Global Prior, bias correction is helping; if not, the global prior may already
+  be well-calibrated for your site
+
+### Cosine similarity (Pipeline 4)
+
+Values range 0–1. Cores with **similarity > 0.9** are very close analogues to
+your site in satellite appearance; cores below 0.7 contribute very little weight
+after the α = 5 sharpening. The weight distribution plot in Step 5 shows how
+concentrated or diffuse the weighting is.
+
+### Choosing between Pipeline 3 and Pipeline 4
+
+Compare the `cv_rmse_tl` and `cv_r2_tl` columns in the Step 5 HTML report's
+comparison table:
+
+- If embedding TL has **lower RMSE** → use Pipeline 4 outputs for VM0033 reporting
+- If Wadoux TL has **lower RMSE** → use Pipeline 3 outputs
+- If very similar → either is defensible; embeddings have the advantage of not
+  requiring a local classifier, which is more robust with N_local < 10
+
+### Prediction intervals for VM0033
+
+VM0033 requires **90% prediction intervals** (not 95%). Compute them from any
+depth model object:
+
+```r
+m   <- targets::tar_read("tl_models", store = "_targets_transfer")$models[["7.5"]]
+se  <- sqrt(m$bias_se^2 + m$residual_sd^2)
+z90 <- qnorm(0.95)   # one-sided 95% = two-sided 90% interval
+# For a pixel with transfer_final prediction p:
+lower_90 <- p - z90 * se
+upper_90 <- p + z90 * se
+```
+
+Use the **lower bound** (`lower_90`) as the conservative VM0033 reporting value.
+
+---
+
+## VM0033 Compliance Notes
+
+| Requirement | How this workflow meets it |
+|-------------|--------------------------|
+| Standard depth intervals | Hardcoded in `blue_carbon_config.R`: 0–15, 15–30, 30–50, 50–100 cm |
+| Mass-preserving harmonization | Equal-area splines (Bishop et al. 1999) in `R/depth_harmonization.R` |
+| Bulk density defaults | Ecosystem-specific defaults from `cfg$BD_DEFAULTS` applied only when measured BD is missing |
+| Carbon stock formula | `SOC × BD × thickness / 100` in `R/qc.R` |
+| 90% prediction intervals | Bias SE + residual SD propagated; `qnorm(0.95)` multiplier |
+| Leave-one-core-out CV | Implemented in `train_tl()` and `train_emb_tl()` — not leave-one-observation-out |
+| Conservative reporting | Lower 90% PI is the reporting value, not the mean prediction |
+
+> **Do not change** `VM0033_DEPTH_MIDPOINTS` or the carbon stock formula without
+> consulting your VM0033 methodology documentation and updating the verification package.
+
+---
+
+## Tips and Troubleshooting
+
+### Console shortcuts (loaded from `.Rprofile`)
+
+```r
+tm()    # targets::tar_make()                   — run all outdated targets
+tv()    # targets::tar_visnetwork()              — visual dependency graph
+tl(x)  # targets::tar_load("x")               — load target x into session
+tm1()  # run only Step 1 targets by name       — faster iteration during development
+```
+
+### Useful `targets` commands
+
+```r
+tar_outdated()                        # what will re-run and why
+tar_make(names = "cores_harmonized")  # run one target + its dependencies
+tar_meta() |> dplyr::select(name, seconds, error)  # timing and error status
+tar_invalidate("global_embeddings")   # force one target to re-run next time
+tar_destroy(); tar_make()             # clear entire cache and start fresh
+```
+
+For the non-main stores, add `script` and `store` arguments:
+
+```r
+targets::tar_make(
+  names  = "tl_models",
+  script = "_targets_transfer.R",
+  store  = "_targets_transfer"
+)
+```
+
+### GEE extraction is slow or hangs
+
+- Each S2 batch uses a 5-minute timeout; a hang causes a catchable error and
+  the batch is retried automatically on the next `tar_make()` call
+- If a particular batch consistently fails, check `tar_meta()` for the error
+  message and inspect the GEE JavaScript console for quota or collection issues
+- The S2 extraction runs in batches of 5 cores — reducing this further is possible
+  by editing `.BATCH_SIZE` in `R/preanalysis/gee_covariates.R`
+
+### Raster band names look wrong after loading from store
+
+`geotargets` serialises `SpatRaster` objects as GeoTIFF; band names can be
+mangled during the round-trip. The `plot_tl_maps()` function reconstructs the
+expected band names from the model object structure before indexing, so this
+is handled automatically in the reports. If you load a raster manually and the
+band names look wrong, run:
+
+```r
+r <- targets::tar_read("tl_rasters", store = "_targets_transfer")
+# Check: names(r) should contain "d7_5_Global_Prior" etc.
+# If not, reconstruct:
+band_sfx <- c("Global_Prior", "Transfer_Final", "Local_Only", "Difference")
+depths   <- c("7_5", "22_5", "40", "75")
+names(r) <- paste0("d", rep(depths, each = 4), "_", band_sfx)
+```
+
+### "No embedding values returned" error in Pipeline 4
+
+This usually means the `GOOGLE/SATELLITE_EMBEDDING/V1/ANNUAL` collection does
+not have imagery for all requested years over some core locations. Check that
+`EMB_YEARS` in `_targets_embedding.R` covers years where the collection has
+global coverage (2017–present as of 2026).
+
+### Changing the GEE project
+
+All three GEE pipelines default to the project ID in their respective scripts:
+- Pipeline 2: `GEE_PROJECT` at top of `_targets_preanalysis.R`
+- Pipeline 3: same variable in `_targets_transfer.R`
+- Pipeline 4: same variable in `_targets_embedding.R`
+
+Update all three if moving to a different GCP project.
+
+---
+
+## Scientific References
+
+**Depth harmonization**
+- Bishop, T.F.A., McBratney, A.B., & Laslett, G.M. (1999). Modelling soil attribute depth functions with equal-area quadratic smoothing splines. *Geoderma*, 91, 27–45. https://doi.org/10.1016/S0016-7061(99)00003-8
+- Malone, B.P. et al. (2009). Mapping continuous depth functions of soil carbon storage and available water capacity. *Geoderma*, 154, 138–152. https://doi.org/10.1016/j.geoderma.2009.10.007
+
+**Blue carbon methodology and VM0033**
+- Howard, J. et al. (2014). *Coastal Blue Carbon: Methods for Assessing Carbon Stocks and Emissions Factors in Mangroves, Tidal Salt Marshes, and Seagrass Meadows*. Conservation International / IOC-UNESCO / IUCN.
+- IPCC (2014). *2013 Supplement to the 2006 IPCC Guidelines: Wetlands*. IPCC, Switzerland.
+
+**Global coastal carbon database**
+- Janousek, C.N. et al. (2025). Coastal wetland carbon stocks database. [Janousek et al. global synthesis]
+- Holmquist, J.R. et al. (2018). Accuracy and Precision of Tidal Wetland Soil Carbon Mapping in the Conterminous United States. *Scientific Reports*, 8, 9478. https://doi.org/10.1038/s41598-018-26948-7
+
+**Transfer learning and instance weighting**
+- Wadoux, A.M.J.-C., Samuel-Rosa, A., Poggio, L., & Mulder, V.L. (2021). A note on knowledge discovery and machine learning in digital soil mapping. *European Journal of Soil Science*, 71, 133–136. https://doi.org/10.1111/ejss.12909
+
+**Random forest**
+- Breiman, L. (2001). Random Forests. *Machine Learning*, 45, 5–32. https://doi.org/10.1023/A:1010933404324
+- Wright, M.N. & Ziegler, A. (2017). ranger: A fast implementation of random forests for high dimensional data in C++ and R. *Journal of Statistical Software*, 77(1). https://doi.org/10.18637/jss.v077.i01
+
+**Satellite embeddings**
+- Google (2025). GOOGLE/SATELLITE_EMBEDDING/V1/ANNUAL — 64-band foundation model embeddings derived from Sentinel-2 annual composites. Google Earth Engine Data Catalog.
+
+**Targets pipeline framework**
+- Landau, W.M. (2021). The targets R package: a dynamic Make-like function-oriented pipeline toolkit for reproducibility and high-performance computing. *Journal of Open Source Software*, 6(57), 2959. https://doi.org/10.21105/joss.02959
