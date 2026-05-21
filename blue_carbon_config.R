@@ -9,6 +9,11 @@ PROJECT_SCENARIO <- "PROJECT"   # BASELINE | PROJECT | CONTROL | DEGRADED
 MONITORING_YEAR  <- 2026
 PROJECT_LOCATION <- "Chemainus Test 1"
 
+# ── Google Earth Engine ───────────────────────────────────────────────────────
+# GEE cloud project used for covariate extraction in the preanalysis pipeline.
+# Must match the project in 00_setup_rgee.R and the Python notebook.
+GEE_PROJECT <- "north-star-project-470316"
+
 # ── Input file paths ──────────────────────────────────────────────────────────
 PRE_ANALYSIS_DIR <- "Pre-Analysis Data Preparation"
 DATA_RAW_DIR     <- file.path(PRE_ANALYSIS_DIR, "data_raw")
