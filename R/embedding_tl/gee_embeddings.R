@@ -110,21 +110,19 @@ extract_global_embeddings <- function(profiles_df, gee_project = NULL,
 # -----------------------------------------------------------------------------
 # extract_aoi_embedding_raster()
 # -----------------------------------------------------------------------------
-# Downloads the mean 64-band embedding image for the local AOI extent.
-# AOI extent and CRS are taken from the local covariate raster.
+# Downloads the mean 64-band embedding image for the local AOI extent and
+# writes it directly to outputs/embedding/aoi_embedding_raster.tif.
+# No Google Drive authentication required — uses GEE's getDownloadURL path
+# (via = "getInfo"), which is suitable for AOIs up to ~32 MB uncompressed.
 #
-# Requires Drive to be enabled: ee_Initialize(drive = TRUE) is called
-# internally. The user must have authenticated Drive at least once via
-# rgee::ee_Initialize(user = "...", drive = TRUE).
-#
-# Returns a 64-band SpatRaster named emb_1 … emb_64.
+# covar_file : path to local covariate raster (defines AOI extent + CRS)
+# years      : integer vector of years to average
 # -----------------------------------------------------------------------------
 extract_aoi_embedding_raster <- function(covar_file, gee_project = NULL,
                                           years = 2023:2025) {
   suppressPackageStartupMessages({ library(rgee); library(terra) })
 
-  # Drive required for raster download
-  initialize_gee(gee_project, drive = TRUE)
+  initialize_gee(gee_project)   # no drive needed
 
   # Derive AOI bounding box in WGS84 from the covariate raster
   r    <- rast(covar_file)
@@ -141,21 +139,27 @@ extract_aoi_embedding_raster <- function(covar_file, gee_project = NULL,
 
   emb_img <- .build_emb_mean(years)$clip(aoi)
 
-  local_file <- tempfile(fileext = ".tif")
-  out <- rgee::ee_as_raster(
+  out_dir  <- file.path("outputs", "embedding")
+  dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+  out_path <- file.path(out_dir, "aoi_embedding_raster.tif")
+
+  # via = "getInfo": direct download to local path, no Drive required.
+  # If the AOI is very large (> ~32 MB uncompressed) this will error with a
+  # size limit message — reduce scale or switch to via = "drive".
+  result <- rgee::ee_as_raster(
     image      = emb_img,
     region     = aoi,
-    dsn        = local_file,
+    dsn        = out_path,
     scale      = .EMB_SCALE,
-    via        = "drive",
+    via        = "getInfo",
     lazy       = FALSE,
     quiet      = TRUE
   )
 
-  result <- if (inherits(out, c("RasterBrick", "RasterStack", "RasterLayer"))) {
-    terra::rast(out)
+  result <- if (inherits(result, c("RasterBrick", "RasterStack", "RasterLayer"))) {
+    terra::rast(result)
   } else {
-    terra::rast(local_file)
+    terra::rast(out_path)
   }
 
   if (nlyr(result) == .EMB_N_BANDS) {
@@ -165,7 +169,7 @@ extract_aoi_embedding_raster <- function(covar_file, gee_project = NULL,
                     .EMB_N_BANDS, nlyr(result)))
   }
 
-  message(sprintf("[EMB] AOI embedding raster: %d × %d px × %d bands",
-                  nrow(result), ncol(result), nlyr(result)))
+  message(sprintf("[EMB] Written to %s  (%d × %d px × %d bands)",
+                  out_path, nrow(result), ncol(result), nlyr(result)))
   result
 }
