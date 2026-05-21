@@ -53,7 +53,7 @@ stopifnot(length(CANONICAL_BANDS) == 27L)
 # Bands needed inside the cloud-mask / index functions — select early so GEE
 # only loads these tiles, not all 13 S2 bands.
 .S2_BANDS_FULL  <- c("B2", "B3", "B4", "B5", "B6", "B7", "B8", "B11", "B12", "QA60")
-.S2_BANDS_NDVI  <- c("B3", "B4", "B8", "QA60")   # NDWI tidal mask needs B3
+.S2_BANDS_NDVI  <- c("B4", "B8", "QA60")   # only NDVI (B8-B4) needed; no tidal mask
 
 
 # =============================================================================
@@ -155,6 +155,11 @@ stopifnot(length(CANONICAL_BANDS) == 27L)
 # Computed BEFORE the median to capture phenological variability.
 # Uses the global (non-spatially-filtered) collection — GEE lazy-evaluates on demand.
 #
+# NOTE: No tidal mask applied. Core locations are in tidal wetlands (EM/SG);
+# applying NDWI < 0.1 would mask out seagrass (always submerged) and
+# intertidal marsh at high tide, leaving zero valid pixels at those sites.
+# Cloud masking only — the full inundation cycle IS the ecosystem signal.
+#
 # Performance notes applied:
 #   ① .select(.S2_BANDS_NDVI) BEFORE .map() — GEE only loads 4 bands per tile
 #   ② CLOUDY_PIXEL_PERCENTAGE < 20 at collection level — drops cloudy scenes early
@@ -163,9 +168,8 @@ stopifnot(length(CANONICAL_BANDS) == 27L)
   process <- function(image) {
     qa         <- image$select("QA60")
     cloud_mask <- qa$bitwiseAnd(1024L)$eq(0L)$And(qa$bitwiseAnd(2048L)$eq(0L))
-    tide_mask  <- image$normalizedDifference(c("B3", "B8"))$lt(0.1)
     image$divide(10000)$
-      updateMask(cloud_mask$And(tide_mask))$
+      updateMask(cloud_mask)$
       normalizedDifference(c("B8", "B4"))$rename("NDVI_stdDev")
   }
 
@@ -183,6 +187,10 @@ stopifnot(length(CANONICAL_BANDS) == 27L)
 # Per-batch S2 median spatially filtered to the batch's bounding box + buffer.
 # This prevents GEE from computing a full global mosaic per call.
 #
+# NOTE: No tidal mask applied — see .build_ndvi_stddev_img() for rationale.
+# Tidal wetland cores (EM/SG) must include inundated observations; cloud-only
+# masking produces an unbiased median over the full inundation cycle.
+#
 # Performance notes applied:
 #   ① filterBounds(region) BEFORE .map() — spatial filter before per-image processing
 #   ② CLOUDY_PIXEL_PERCENTAGE < 20 at collection level
@@ -192,9 +200,8 @@ stopifnot(length(CANONICAL_BANDS) == 27L)
   process <- function(image) {
     qa         <- image$select("QA60")
     cloud_mask <- qa$bitwiseAnd(1024L)$eq(0L)$And(qa$bitwiseAnd(2048L)$eq(0L))
-    tide_mask  <- image$normalizedDifference(c("B3", "B8"))$lt(0.1)
     image$divide(10000)$
-      updateMask(cloud_mask$And(tide_mask))
+      updateMask(cloud_mask)
   }
 
   ee$ImageCollection("COPERNICUS/S2_SR_HARMONIZED")$
@@ -301,9 +308,13 @@ stopifnot(length(CANONICAL_BANDS) == 27L)
   if (length(data) == 0L) return(data.frame())
   rows <- lapply(data, function(f) {
     props <- f$properties
-    props[setdiff(names(props), .GEE_SYSTEM_COLS)]
+    props <- props[setdiff(names(props), .GEE_SYSTEM_COLS)]
+    # GEE returns NULL for masked / out-of-extent pixels; coerce to NA so
+    # as.data.frame() doesn't see mixed lengths (0 vs 1) and error out.
+    props <- lapply(props, function(v) if (is.null(v)) NA else v)
+    as.data.frame(props, stringsAsFactors = FALSE)
   })
-  dplyr::bind_rows(lapply(rows, function(x) as.data.frame(x, stringsAsFactors = FALSE)))
+  dplyr::bind_rows(rows)
 }
 
 
