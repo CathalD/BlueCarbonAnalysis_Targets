@@ -137,30 +137,32 @@ extract_aoi_embedding_raster <- function(covar_file, gee_project = NULL,
   message(sprintf("[EMB] Downloading AOI embedding raster (%d bands, %d–%d avg)...",
                   .EMB_N_BANDS, min(years), max(years)))
 
+  # Match the covariate raster resolution (25 m) — keeps download small and
+  # consistent with prediction inputs; also stays under getDownloadURL's ~32 MB limit.
+  covar_scale_m <- ceiling(mean(terra::res(r)))
+  dl_scale      <- if (covar_scale_m > .EMB_SCALE) covar_scale_m else .EMB_SCALE
+
   emb_img <- .build_emb_mean(years)$clip(aoi)
 
   out_dir  <- file.path("outputs", "embedding")
   dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
   out_path <- file.path(out_dir, "aoi_embedding_raster.tif")
 
-  # via = "getInfo": direct download to local path, no Drive required.
-  # If the AOI is very large (> ~32 MB uncompressed) this will error with a
-  # size limit message — reduce scale or switch to via = "drive".
-  result <- rgee::ee_as_raster(
-    image      = emb_img,
-    region     = aoi,
-    dsn        = out_path,
-    scale      = .EMB_SCALE,
-    via        = "getInfo",
-    lazy       = FALSE,
-    quiet      = TRUE
-  )
+  # Direct HTTPS download via getDownloadURL — no Drive or GCS required.
+  # format = "GEO_TIFF" + filePerBand = FALSE → single multi-band GeoTIFF.
+  message(sprintf("[EMB] Requesting download URL (scale=%dm)...", dl_scale))
+  url <- emb_img$getDownloadURL(list(
+    format      = "GEO_TIFF",
+    scale       = dl_scale,
+    region      = aoi,
+    crs         = "EPSG:4326",
+    filePerBand = FALSE
+  ))
 
-  result <- if (inherits(result, c("RasterBrick", "RasterStack", "RasterLayer"))) {
-    terra::rast(result)
-  } else {
-    terra::rast(out_path)
-  }
+  message("[EMB] Downloading...")
+  utils::download.file(url, destfile = out_path, mode = "wb", quiet = FALSE)
+
+  result <- terra::rast(out_path)
 
   if (nlyr(result) == .EMB_N_BANDS) {
     names(result) <- paste0("emb_", seq_len(.EMB_N_BANDS))
