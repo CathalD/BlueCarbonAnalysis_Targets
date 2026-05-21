@@ -154,33 +154,28 @@ stopifnot(length(CANONICAL_BANDS) == 27L)
 }
 
 
-# NDVI_stdDev: stdDev of NDVI across the full summer collection.
-# Computed BEFORE the median to capture phenological variability.
-# Uses the global (non-spatially-filtered) collection — GEE lazy-evaluates on demand.
+# Per-batch NDVI_stdDev: spatially filtered to each batch's bounding box.
+# stdDev uses the FULL unranked cloud-masked collection (no image limit) to
+# capture the complete range of phenological variability across the season.
 #
-# NOTE: No tidal mask applied. Core locations are in tidal wetlands (EM/SG);
-# applying NDWI < 0.1 would mask out seagrass (always submerged) and
-# intertidal marsh at high tide, leaving zero valid pixels at those sites.
-# Cloud masking only — the full inundation cycle IS the ecosystem signal.
-#
-# Performance notes applied:
-#   ① .select(.S2_BANDS_NDVI) BEFORE .map() — GEE only loads 4 bands per tile
-#   ② CLOUDY_PIXEL_PERCENTAGE < 20 at collection level — drops cloudy scenes early
-#   ③ QA60 bitmask + ÷10000 scaling inside process() — per-image cloud masking
-.build_ndvi_stddev_img <- function() {
+# NOTE: No tidal mask — same reasoning as .build_s2_median(). Cloud mask only.
+# NOTE: filterBounds(region) is REQUIRED here. Without it GEE must compute
+#       stdDev across the global S2 archive → computation timeout for every batch.
+.build_ndvi_stddev_local <- function(region) {
   process <- function(image) {
     qa         <- image$select("QA60")
     cloud_mask <- qa$bitwiseAnd(1024L)$eq(0L)$And(qa$bitwiseAnd(2048L)$eq(0L))
     image$divide(10000)$
       updateMask(cloud_mask)$
-      normalizedDifference(c("B8", "B4"))$rename("NDVI_stdDev")
+      normalizedDifference(c("B8", "B4"))$rename("NDVI")  # → stdDev gives "NDVI_stdDev"
   }
 
   ee$ImageCollection("COPERNICUS/S2_SR_HARMONIZED")$
     filterDate(.S2_START, .S2_END)$
-    filter(ee$Filter$lt("CLOUDY_PIXEL_PERCENTAGE", .S2_MAX_CLOUD))$   # ② collection pre-filter
+    filterBounds(region)$                                              # spatial filter first
+    filter(ee$Filter$lt("CLOUDY_PIXEL_PERCENTAGE", .S2_MAX_CLOUD))$
     filter(ee$Filter$calendarRange(5, 9, "month"))$
-    select(.S2_BANDS_NDVI)$                                           # ① band selection before map
+    select(.S2_BANDS_NDVI)$
     map(process)$
     reduce(ee$Reducer$stdDev())$
     rename("NDVI_stdDev")
@@ -450,13 +445,52 @@ extract_sar <- function(profiles_df, gee_project = NULL, use_drive = FALSE) {
                  batch_size = 100L, scale = 30L, use_drive = use_drive)
 }
 
-extract_ndvi_stddev <- function(profiles_df, gee_project = NULL, use_drive = FALSE) {
-  suppressPackageStartupMessages(library(rgee))
+extract_ndvi_stddev <- function(profiles_df, gee_project = NULL,
+                                 batch_size = 25L, use_drive = FALSE) {
+  suppressPackageStartupMessages({ library(rgee); library(dplyr) })
   initialize_gee(gee_project)
-  message("[GEE] Building NDVI_stdDev image (full summer collection)...")
-  img <- .build_ndvi_stddev_img()
-  .extract_batch(img, profiles_df, "NDVI_stdDev (phenology, 1 band)",
-                 batch_size = 100L, scale = 30L, use_drive = use_drive)
+
+  n         <- nrow(profiles_df)
+  n_batches <- ceiling(n / batch_size)
+  all_rows  <- list()
+  n_failed  <- 0L
+
+  message(sprintf("[GEE] Extracting NDVI_stdDev (%d pts, batch=%d, scale=30m, tileScale=%d, buffer=%dm)",
+                  n, batch_size, .TILE_SCALE, .S2_BUFFER_M))
+
+  for (i in seq(1L, n, by = batch_size)) {
+    end_idx   <- min(i + batch_size - 1L, n)
+    batch_df  <- profiles_df[i:end_idx, ]
+    fc        <- .df_to_ee_fc(batch_df)
+    batch_num <- ceiling(i / batch_size)
+
+    tryCatch({
+      region <- fc$geometry()$bounds()$buffer(.S2_BUFFER_M)
+      img    <- .build_ndvi_stddev_local(region)
+
+      result_fc <- img$reduceRegions(
+        collection = fc,
+        reducer    = ee$Reducer$first(),
+        scale      = 30L,
+        tileScale  = .TILE_SCALE
+      )
+      batch_df_out <- .ee_fc_result_to_df(result_fc, "NDVI_stdDev", use_drive)
+      all_rows <- c(all_rows, list(batch_df_out))
+
+      if (batch_num %% 10L == 0L || batch_num == n_batches)
+        message(sprintf("  Batch %d/%d OK  (%d rows so far)",
+                        batch_num, n_batches, sum(vapply(all_rows, nrow, 0L))))
+    }, error = function(e) {
+      n_failed <<- n_failed + 1L
+      message(sprintf("  Batch %d/%d FAILED: %s", batch_num, n_batches, conditionMessage(e)))
+    })
+  }
+
+  message(sprintf("[GEE] NDVI_stdDev complete — %d rows, %d batches failed",
+                  sum(vapply(all_rows, nrow, 0L)), n_failed))
+
+  if (length(all_rows) == 0L) return(data.frame())
+  dplyr::bind_rows(all_rows)
 }
 
 extract_s2_all <- function(profiles_df, gee_project = NULL, use_drive = FALSE) {
