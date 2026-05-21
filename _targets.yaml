@@ -5,3 +5,7 @@ main:
 transfer:
   script: _targets_transfer.R
   store: _targets_transfer
+
+preanalysis:
+  script: _targets_preanalysis.R
+  store: _targets_preanalysis
