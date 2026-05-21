@@ -301,9 +301,13 @@ stopifnot(length(CANONICAL_BANDS) == 27L)
   if (length(data) == 0L) return(data.frame())
   rows <- lapply(data, function(f) {
     props <- f$properties
-    props[setdiff(names(props), .GEE_SYSTEM_COLS)]
+    props <- props[setdiff(names(props), .GEE_SYSTEM_COLS)]
+    # GEE returns NULL for masked / out-of-extent pixels; coerce to NA so
+    # as.data.frame() doesn't see mixed lengths (0 vs 1) and error out.
+    props <- lapply(props, function(v) if (is.null(v)) NA else v)
+    as.data.frame(props, stringsAsFactors = FALSE)
   })
-  dplyr::bind_rows(lapply(rows, function(x) as.data.frame(x, stringsAsFactors = FALSE)))
+  dplyr::bind_rows(rows)
 }
 
 
