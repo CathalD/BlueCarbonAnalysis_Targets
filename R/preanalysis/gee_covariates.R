@@ -44,9 +44,16 @@ stopifnot(length(CANONICAL_BANDS) == 27L)
 .TC_END    <- "2022-12-31"
 
 # ── S2 extraction parameters ─────────────────────────────────────────────────
-.S2_MAX_CLOUD   <- 20L   # % cloud cover threshold
+.S2_MAX_CLOUD   <- 20L   # % cloud cover threshold (collection-level pre-filter)
 .S2_IMAGE_LIMIT <- 20L   # max scenes per batch area (least cloudy first)
 .S2_BUFFER_M    <- 5000L # metres buffer around each batch of points
+.S2_SCALE       <- 10L   # native S2 optical resolution (B2/B4/B8 = 10 m)
+.TILE_SCALE     <- 4L    # GEE tileScale for reduceRegions (4 = 4× more memory tiles)
+
+# Bands needed inside the cloud-mask / index functions — select early so GEE
+# only loads these tiles, not all 13 S2 bands.
+.S2_BANDS_FULL  <- c("B2", "B3", "B4", "B5", "B6", "B7", "B8", "B11", "B12", "QA60")
+.S2_BANDS_NDVI  <- c("B3", "B4", "B8", "QA60")   # NDWI tidal mask needs B3
 
 
 # =============================================================================
@@ -146,20 +153,27 @@ stopifnot(length(CANONICAL_BANDS) == 27L)
 
 # NDVI_stdDev: stdDev of NDVI across the full summer collection.
 # Computed BEFORE the median to capture phenological variability.
-# Uses the global (non-spatially-filtered) collection — GEE computes on demand.
+# Uses the global (non-spatially-filtered) collection — GEE lazy-evaluates on demand.
+#
+# Performance notes applied:
+#   ① .select(.S2_BANDS_NDVI) BEFORE .map() — GEE only loads 4 bands per tile
+#   ② CLOUDY_PIXEL_PERCENTAGE < 20 at collection level — drops cloudy scenes early
+#   ③ QA60 bitmask + ÷10000 scaling inside process() — per-image cloud masking
 .build_ndvi_stddev_img <- function() {
   process <- function(image) {
     qa         <- image$select("QA60")
     cloud_mask <- qa$bitwiseAnd(1024L)$eq(0L)$And(qa$bitwiseAnd(2048L)$eq(0L))
     tide_mask  <- image$normalizedDifference(c("B3", "B8"))$lt(0.1)
-    image$updateMask(cloud_mask$And(tide_mask))$divide(10000)$
+    image$divide(10000)$
+      updateMask(cloud_mask$And(tide_mask))$
       normalizedDifference(c("B8", "B4"))$rename("NDVI_stdDev")
   }
 
   ee$ImageCollection("COPERNICUS/S2_SR_HARMONIZED")$
     filterDate(.S2_START, .S2_END)$
-    filter(ee$Filter$lt("CLOUDY_PIXEL_PERCENTAGE", .S2_MAX_CLOUD))$
+    filter(ee$Filter$lt("CLOUDY_PIXEL_PERCENTAGE", .S2_MAX_CLOUD))$   # ② collection pre-filter
     filter(ee$Filter$calendarRange(5, 9, "month"))$
+    select(.S2_BANDS_NDVI)$                                           # ① band selection before map
     map(process)$
     reduce(ee$Reducer$stdDev())$
     rename("NDVI_stdDev")
@@ -168,21 +182,29 @@ stopifnot(length(CANONICAL_BANDS) == 27L)
 
 # Per-batch S2 median spatially filtered to the batch's bounding box + buffer.
 # This prevents GEE from computing a full global mosaic per call.
+#
+# Performance notes applied:
+#   ① filterBounds(region) BEFORE .map() — spatial filter before per-image processing
+#   ② CLOUDY_PIXEL_PERCENTAGE < 20 at collection level
+#   ③ .select(.S2_BANDS_FULL) BEFORE .map() — load only needed bands per tile
+#   ④ QA60 bitmask + ÷10000 scaling inside process()
 .build_s2_median <- function(region) {
   process <- function(image) {
     qa         <- image$select("QA60")
     cloud_mask <- qa$bitwiseAnd(1024L)$eq(0L)$And(qa$bitwiseAnd(2048L)$eq(0L))
     tide_mask  <- image$normalizedDifference(c("B3", "B8"))$lt(0.1)
-    image$updateMask(cloud_mask$And(tide_mask))$divide(10000)
+    image$divide(10000)$
+      updateMask(cloud_mask$And(tide_mask))
   }
 
   ee$ImageCollection("COPERNICUS/S2_SR_HARMONIZED")$
     filterDate(.S2_START, .S2_END)$
-    filterBounds(region)$
-    filter(ee$Filter$lt("CLOUDY_PIXEL_PERCENTAGE", .S2_MAX_CLOUD))$
+    filterBounds(region)$                                              # ① spatial filter first
+    filter(ee$Filter$lt("CLOUDY_PIXEL_PERCENTAGE", .S2_MAX_CLOUD))$   # ② collection pre-filter
     filter(ee$Filter$calendarRange(5, 9, "month"))$
     limit(.S2_IMAGE_LIMIT, "CLOUDY_PIXEL_PERCENTAGE")$
-    map(process)$
+    select(.S2_BANDS_FULL)$                                           # ③ band selection before map
+    map(process)$                                                      # ④ cloud mask + scale inside
     median()$clip(region)
 }
 
@@ -247,61 +269,50 @@ stopifnot(length(CANONICAL_BANDS) == 27L)
 }
 
 
-# Generic batched reduceRegions for a pre-built ee.Image.
-# Returns data.frame with profile_id + extracted band columns.
-.extract_batch <- function(image, profiles_df, name, batch_size = 100L, scale = 30L) {
+# Convert a GEE FeatureCollection result to a data.frame.
+# use_drive = TRUE: async Drive export (for large result sets or slow connections).
+# use_drive = FALSE (default): synchronous getInfo() (fine for ≤ ~200 features/call).
+#
+# Drive export requires ee_Initialize(drive = TRUE) to have been called first.
+.ee_fc_result_to_df <- function(result_fc, name, use_drive = FALSE) {
   suppressPackageStartupMessages(library(dplyr))
 
-  n         <- nrow(profiles_df)
-  n_batches <- ceiling(n / batch_size)
-  all_rows  <- list()
-  n_failed  <- 0L
+  if (use_drive) {
+    task_name <- paste0("rgee_", gsub("[^a-zA-Z0-9]", "_", substr(name, 1L, 40L)))
+    task <- rgee::ee_table_to_drive(
+      collection  = result_fc,
+      description = task_name,
+      fileFormat  = "CSV",
+      folder      = "rgee_exports"
+    )
+    task$start()
+    message(sprintf("  [Drive] task '%s' submitted — waiting...", task_name))
+    rgee::ee_monitoring(task, max_attempts = 200L, quiet = TRUE)
 
-  message(sprintf("[GEE] Extracting %s (%d pts, batch=%d, scale=%dm)",
-                  name, n, batch_size, scale))
-
-  for (i in seq(1L, n, by = batch_size)) {
-    end_idx   <- min(i + batch_size - 1L, n)
-    batch_df  <- profiles_df[i:end_idx, ]
-    fc        <- .df_to_ee_fc(batch_df)
-    batch_num <- ceiling(i / batch_size)
-
-    tryCatch({
-      res  <- image$reduceRegions(
-        collection = fc,
-        reducer    = ee$Reducer$first(),
-        scale      = scale,
-        tileScale  = 2L
-      )
-      data <- res$getInfo()$features
-      batch_rows <- lapply(data, function(f) {
-        props <- f$properties
-        # Drop GEE system columns
-        props[setdiff(names(props), .GEE_SYSTEM_COLS)]
-      })
-      all_rows <- c(all_rows, batch_rows)
-
-      if (batch_num %% 10L == 0L || batch_num == n_batches)
-        message(sprintf("  Batch %d/%d OK  (%d rows so far)",
-                        batch_num, n_batches, length(all_rows)))
-    }, error = function(e) {
-      n_failed <<- n_failed + 1L
-      message(sprintf("  Batch %d/%d FAILED: %s", batch_num, n_batches, conditionMessage(e)))
-    })
+    local_file <- tempfile(fileext = ".csv")
+    rgee::ee_drive_to_local(task, dsn = local_file, quiet = TRUE)
+    df <- readr::read_csv(local_file, show_col_types = FALSE)
+    df <- df[, setdiff(names(df), .GEE_SYSTEM_COLS), drop = FALSE]
+    return(df)
   }
 
-  message(sprintf("[GEE] %s complete — %d rows, %d batches failed",
-                  name, length(all_rows), n_failed))
-
-  if (length(all_rows) == 0L) return(data.frame())
-  dplyr::bind_rows(lapply(all_rows, function(x) as.data.frame(x, stringsAsFactors = FALSE)))
+  # Synchronous path
+  data <- result_fc$getInfo()$features
+  if (length(data) == 0L) return(data.frame())
+  rows <- lapply(data, function(f) {
+    props <- f$properties
+    props[setdiff(names(props), .GEE_SYSTEM_COLS)]
+  })
+  dplyr::bind_rows(lapply(rows, function(x) as.data.frame(x, stringsAsFactors = FALSE)))
 }
 
 
-# S2-specific batch extraction: builds a spatially filtered S2 median per batch.
-# band_fn : function(s2_median_image) → ee.Image with renamed bands
-.extract_batch_s2 <- function(profiles_df, name, band_fn,
-                               batch_size = 25L, scale = 30L) {
+# Generic batched reduceRegions for a pre-built ee.Image.
+# Returns data.frame with profile_id + extracted band columns.
+#
+# use_drive: passed to .ee_fc_result_to_df() — set TRUE for large point sets.
+.extract_batch <- function(image, profiles_df, name,
+                            batch_size = 100L, scale = 30L, use_drive = FALSE) {
   suppressPackageStartupMessages(library(dplyr))
 
   n         <- nrow(profiles_df)
@@ -309,8 +320,8 @@ stopifnot(length(CANONICAL_BANDS) == 27L)
   all_rows  <- list()
   n_failed  <- 0L
 
-  message(sprintf("[GEE] Extracting %s (%d pts, batch=%d, scale=%dm, buffer=%dm)",
-                  name, n, batch_size, scale, .S2_BUFFER_M))
+  message(sprintf("[GEE] Extracting %s (%d pts, batch=%d, scale=%dm, tileScale=%d)",
+                  name, n, batch_size, scale, .TILE_SCALE))
 
   for (i in seq(1L, n, by = batch_size)) {
     end_idx   <- min(i + batch_size - 1L, n)
@@ -319,26 +330,18 @@ stopifnot(length(CANONICAL_BANDS) == 27L)
     batch_num <- ceiling(i / batch_size)
 
     tryCatch({
-      region   <- fc$geometry()$bounds()$buffer(.S2_BUFFER_M)
-      s2_local <- .build_s2_median(region)
-      img      <- band_fn(s2_local)
-
-      res  <- img$reduceRegions(
+      result_fc <- image$reduceRegions(
         collection = fc,
         reducer    = ee$Reducer$first(),
         scale      = scale,
-        tileScale  = 2L
+        tileScale  = .TILE_SCALE   # ④ tileScale = 4 (4× more GEE memory tiles)
       )
-      data <- res$getInfo()$features
-      batch_rows <- lapply(data, function(f) {
-        props <- f$properties
-        props[setdiff(names(props), .GEE_SYSTEM_COLS)]
-      })
-      all_rows <- c(all_rows, batch_rows)
+      batch_df_out <- .ee_fc_result_to_df(result_fc, name, use_drive)
+      all_rows <- c(all_rows, list(batch_df_out))
 
       if (batch_num %% 10L == 0L || batch_num == n_batches)
         message(sprintf("  Batch %d/%d OK  (%d rows so far)",
-                        batch_num, n_batches, length(all_rows)))
+                        batch_num, n_batches, sum(vapply(all_rows, nrow, 0L))))
     }, error = function(e) {
       n_failed <<- n_failed + 1L
       message(sprintf("  Batch %d/%d FAILED: %s", batch_num, n_batches, conditionMessage(e)))
@@ -346,10 +349,68 @@ stopifnot(length(CANONICAL_BANDS) == 27L)
   }
 
   message(sprintf("[GEE] %s complete — %d rows, %d batches failed",
-                  name, length(all_rows), n_failed))
+                  name, sum(vapply(all_rows, nrow, 0L)), n_failed))
 
   if (length(all_rows) == 0L) return(data.frame())
-  dplyr::bind_rows(lapply(all_rows, function(x) as.data.frame(x, stringsAsFactors = FALSE)))
+  dplyr::bind_rows(all_rows)
+}
+
+
+# S2-specific batch extraction: builds a spatially filtered S2 median per batch,
+# then extracts band values. Compositing (median) happens at collection level so
+# reduceRegions() runs once per batch against a single composite image.
+#
+# band_fn   : function(s2_median_image) → ee.Image with renamed bands
+# use_drive : passed to .ee_fc_result_to_df()
+.extract_batch_s2 <- function(profiles_df, name, band_fn,
+                               batch_size = 25L, scale = .S2_SCALE,
+                               use_drive = FALSE) {
+  suppressPackageStartupMessages(library(dplyr))
+
+  n         <- nrow(profiles_df)
+  n_batches <- ceiling(n / batch_size)
+  all_rows  <- list()
+  n_failed  <- 0L
+
+  message(sprintf("[GEE] Extracting %s (%d pts, batch=%d, scale=%dm, tileScale=%d, buffer=%dm)",
+                  name, n, batch_size, scale, .TILE_SCALE, .S2_BUFFER_M))
+
+  for (i in seq(1L, n, by = batch_size)) {
+    end_idx   <- min(i + batch_size - 1L, n)
+    batch_df  <- profiles_df[i:end_idx, ]
+    fc        <- .df_to_ee_fc(batch_df)
+    batch_num <- ceiling(i / batch_size)
+
+    tryCatch({
+      # Per-batch spatial filter → build median composite → apply band_fn
+      # (⑥ compositing: single median image per batch, not per-image extraction)
+      region   <- fc$geometry()$bounds()$buffer(.S2_BUFFER_M)
+      s2_local <- .build_s2_median(region)   # already applies filterBounds + select + map
+      img      <- band_fn(s2_local)
+
+      result_fc <- img$reduceRegions(
+        collection = fc,
+        reducer    = ee$Reducer$first(),
+        scale      = scale,
+        tileScale  = .TILE_SCALE   # ④ tileScale = 4
+      )
+      batch_df_out <- .ee_fc_result_to_df(result_fc, name, use_drive)
+      all_rows <- c(all_rows, list(batch_df_out))
+
+      if (batch_num %% 10L == 0L || batch_num == n_batches)
+        message(sprintf("  Batch %d/%d OK  (%d rows so far)",
+                        batch_num, n_batches, sum(vapply(all_rows, nrow, 0L))))
+    }, error = function(e) {
+      n_failed <<- n_failed + 1L
+      message(sprintf("  Batch %d/%d FAILED: %s", batch_num, n_batches, conditionMessage(e)))
+    })
+  }
+
+  message(sprintf("[GEE] %s complete — %d rows, %d batches failed",
+                  name, sum(vapply(all_rows, nrow, 0L)), n_failed))
+
+  if (length(all_rows) == 0L) return(data.frame())
+  dplyr::bind_rows(all_rows)
 }
 
 
@@ -357,48 +418,50 @@ stopifnot(length(CANONICAL_BANDS) == 27L)
 # PUBLIC API — one target per extraction group
 # =============================================================================
 
-extract_topo <- function(profiles_df, gee_project = NULL) {
+extract_topo <- function(profiles_df, gee_project = NULL, use_drive = FALSE) {
   suppressPackageStartupMessages(library(rgee))
   initialize_gee(gee_project)
   message("[GEE] Building topography + channels stack...")
   stack <- .build_topo_stack()
   .extract_batch(stack, profiles_df, "Topography & Channels (7 bands)",
-                 batch_size = 500L, scale = 30L)
+                 batch_size = 500L, scale = 30L, use_drive = use_drive)
 }
 
-extract_sar <- function(profiles_df, gee_project = NULL) {
+extract_sar <- function(profiles_df, gee_project = NULL, use_drive = FALSE) {
   suppressPackageStartupMessages(library(rgee))
   initialize_gee(gee_project)
   message("[GEE] Building Sentinel-1 SAR stack...")
   stack <- .build_sar_stack()
   .extract_batch(stack, profiles_df, "Sentinel-1 SAR (3 bands)",
-                 batch_size = 100L, scale = 30L)
+                 batch_size = 100L, scale = 30L, use_drive = use_drive)
 }
 
-extract_ndvi_stddev <- function(profiles_df, gee_project = NULL) {
+extract_ndvi_stddev <- function(profiles_df, gee_project = NULL, use_drive = FALSE) {
   suppressPackageStartupMessages(library(rgee))
   initialize_gee(gee_project)
   message("[GEE] Building NDVI_stdDev image (full summer collection)...")
   img <- .build_ndvi_stddev_img()
   .extract_batch(img, profiles_df, "NDVI_stdDev (phenology, 1 band)",
-                 batch_size = 100L, scale = 30L)
+                 batch_size = 100L, scale = 30L, use_drive = use_drive)
 }
 
-extract_s2_raw <- function(profiles_df, gee_project = NULL) {
+extract_s2_raw <- function(profiles_df, gee_project = NULL, use_drive = FALSE) {
   suppressPackageStartupMessages(library(rgee))
   initialize_gee(gee_project)
   .extract_batch_s2(profiles_df, "Sentinel-2 Raw (9 bands incl. Red-Edge)",
-                    band_fn = .s2_select_raw, batch_size = 25L, scale = 30L)
+                    band_fn = .s2_select_raw, batch_size = 25L,
+                    scale = .S2_SCALE, use_drive = use_drive)
 }
 
-extract_s2_derived <- function(profiles_df, gee_project = NULL) {
+extract_s2_derived <- function(profiles_df, gee_project = NULL, use_drive = FALSE) {
   suppressPackageStartupMessages(library(rgee))
   initialize_gee(gee_project)
   .extract_batch_s2(profiles_df, "Sentinel-2 Derived (5 bands)",
-                    band_fn = .s2_select_derived, batch_size = 25L, scale = 30L)
+                    band_fn = .s2_select_derived, batch_size = 25L,
+                    scale = .S2_SCALE, use_drive = use_drive)
 }
 
-extract_climate <- function(profiles_df, gee_project = NULL) {
+extract_climate <- function(profiles_df, gee_project = NULL, use_drive = FALSE) {
   suppressPackageStartupMessages(library(rgee))
   initialize_gee(gee_project)
   message(sprintf("[GEE] Building TerraClimate stack (%s–%s)...",
@@ -407,7 +470,7 @@ extract_climate <- function(profiles_df, gee_project = NULL) {
   .extract_batch(stack, profiles_df,
                  sprintf("TerraClimate MAT/MAP (%s–%s)",
                          substr(.TC_START, 1, 4), substr(.TC_END, 1, 4)),
-                 batch_size = 500L, scale = 4000L)
+                 batch_size = 500L, scale = 4000L, use_drive = use_drive)
 }
 
 
