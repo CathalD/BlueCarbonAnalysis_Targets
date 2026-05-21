@@ -112,8 +112,8 @@ extract_global_embeddings <- function(profiles_df, gee_project = NULL,
 # -----------------------------------------------------------------------------
 # Downloads the mean 64-band embedding image for the local AOI extent and
 # writes it directly to outputs/embedding/aoi_embedding_raster.tif.
-# No Google Drive authentication required — uses GEE's getDownloadURL path
-# (via = "getInfo"), which is suitable for AOIs up to ~32 MB uncompressed.
+# No Google Drive authentication required — uses GEE's getDownloadURL in
+# 16-band chunks (~18 MB each) to stay under the 48 MB per-request limit.
 #
 # covar_file : path to local covariate raster (defines AOI extent + CRS)
 # years      : integer vector of years to average
@@ -141,26 +141,48 @@ extract_aoi_embedding_raster <- function(covar_file, gee_project = NULL,
   # consistent with prediction inputs; also stays under getDownloadURL's ~32 MB limit.
   covar_scale_m <- ceiling(mean(terra::res(r)))
   dl_scale      <- if (covar_scale_m > .EMB_SCALE) covar_scale_m else .EMB_SCALE
-
-  emb_img <- .build_emb_mean(years)$clip(aoi)
+  emb_img       <- .build_emb_mean(years)$clip(aoi)
 
   out_dir  <- file.path("outputs", "embedding")
   dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
   out_path <- file.path(out_dir, "aoi_embedding_raster.tif")
 
-  # Direct HTTPS download via getDownloadURL — no Drive or GCS required.
-  # format = "GEO_TIFF" + filePerBand = FALSE → single multi-band GeoTIFF.
-  message(sprintf("[EMB] Requesting download URL (scale=%dm)...", dl_scale))
-  url <- emb_img$getDownloadURL(list(
-    format      = "GEO_TIFF",
-    scale       = dl_scale,
-    region      = aoi,
-    crs         = "EPSG:4326",
-    filePerBand = FALSE
-  ))
+  # GEE's getDownloadURL limit is 48 MB per request. A 64-band image at 25 m
+  # over a typical coastal AOI exceeds this. Split into chunks of 16 bands
+  # (~18 MB each), download each chunk, then stack into a single GeoTIFF.
+  band_names  <- emb_img$bandNames()$getInfo()
+  n_bands     <- length(band_names)
+  chunk_size  <- 16L
+  band_chunks <- split(band_names,
+                       ceiling(seq_along(band_names) / chunk_size))
+  n_chunks    <- length(band_chunks)
 
-  message("[EMB] Downloading...")
-  utils::download.file(url, destfile = out_path, mode = "wb", quiet = FALSE)
+  message(sprintf("[EMB] Downloading %d bands in %d chunks of %d (scale=%dm)...",
+                  n_bands, n_chunks, chunk_size, dl_scale))
+
+  chunk_files <- character(n_chunks)
+  for (j in seq_along(band_chunks)) {
+    chunk_img  <- emb_img$select(band_chunks[[j]])
+    chunk_path <- file.path(out_dir, sprintf("aoi_emb_chunk_%02d.tif", j))
+
+    url <- chunk_img$getDownloadURL(list(
+      format      = "GEO_TIFF",
+      scale       = dl_scale,
+      region      = aoi,
+      crs         = "EPSG:4326",
+      filePerBand = FALSE
+    ))
+
+    message(sprintf("  Chunk %d/%d (%d bands)...", j, n_chunks, length(band_chunks[[j]])))
+    utils::download.file(url, destfile = chunk_path, mode = "wb", quiet = TRUE)
+    chunk_files[j] <- chunk_path
+  }
+
+  # Stack chunks into a single compressed GeoTIFF
+  result <- terra::rast(lapply(chunk_files, terra::rast))
+  terra::writeRaster(result, out_path, overwrite = TRUE,
+                     gdal = c("COMPRESS=LZW"))
+  unlink(chunk_files)   # remove temp chunk files
 
   result <- terra::rast(out_path)
 
