@@ -3,15 +3,15 @@
 # GEE covariate extraction — exact R/rgee port of
 #   CoastalBlueCarbon_GlobalCoreCovariate_Extraction.ipynb
 #
-# Produces the canonical 27-band stack:
+# Produces the canonical 26-band stack:
 #   Group 1 — Topography & Channels (7):
 #     elevation_m, slope, elevationRelMHW, twi, dist_to_channel_m,
 #     tidal_flat_prob, coastal_dist_m
 #   Group 2 — Sentinel-1 SAR (3):
 #     VV_mean, VH_mean, VVVH_ratio
-#   Group 3 — Sentinel-2 Optical & Phenology (15):
+#   Group 3 — Sentinel-2 Optical & Phenology (14):
 #     B, G, R, B5, B6, B7, NIR, SWIR1, SWIR2
-#     NDVI_median, LSWI_median, mNDWI_median, NDVI_stdDev, SAVI_median, tidal_wetness
+#     NDVI_median, LSWI_median, mNDWI_median, SAVI_median, tidal_wetness
 #   Group 4 — Climate (2):
 #     MAT_C, MAP_mm
 #
@@ -27,10 +27,10 @@ CANONICAL_BANDS <- c(
   "VV_mean", "VH_mean", "VVVH_ratio",
   "B", "G", "R", "B5", "B6", "B7", "NIR", "SWIR1", "SWIR2",
   "NDVI_median", "LSWI_median", "mNDWI_median",
-  "NDVI_stdDev", "SAVI_median", "tidal_wetness",
+  "SAVI_median", "tidal_wetness",
   "MAT_C", "MAP_mm"
 )
-stopifnot(length(CANONICAL_BANDS) == 27L)
+stopifnot(length(CANONICAL_BANDS) == 26L)
 
 # GEE system columns emitted by reduceRegions — drop from all results
 .GEE_SYSTEM_COLS <- c("system:index", ".geo", "first")
@@ -56,7 +56,6 @@ stopifnot(length(CANONICAL_BANDS) == 27L)
 # Bands needed inside the cloud-mask / index functions — select early so GEE
 # only loads these tiles, not all 13 S2 bands.
 .S2_BANDS_FULL  <- c("B2", "B3", "B4", "B5", "B6", "B7", "B8", "B11", "B12", "QA60")
-.S2_BANDS_NDVI  <- c("B4", "B8", "QA60")   # only NDVI (B8-B4) needed; no tidal mask
 
 
 # =============================================================================
@@ -151,41 +150,6 @@ stopifnot(length(CANONICAL_BANDS) == 27L)
   map_img <- terra_mean$select("pr")$multiply(12)$rename("MAP_mm")
 
   mat_img$addBands(map_img)
-}
-
-
-# Per-batch NDVI_stdDev: spatially filtered to each batch's bounding box.
-# stdDev uses the FULL unranked cloud-masked collection (no image limit) to
-# capture the complete range of phenological variability across the season.
-#
-# NOTE: No tidal mask — same reasoning as .build_s2_median(). Cloud mask only.
-# NOTE: filterBounds(region) is REQUIRED here. Without it GEE must compute
-#       stdDev across the global S2 archive → computation timeout for every batch.
-.build_ndvi_stddev_local <- function(region) {
-  process <- function(image) {
-    qa         <- image$select("QA60")
-    cloud_mask <- qa$bitwiseAnd(1024L)$eq(0L)$And(qa$bitwiseAnd(2048L)$eq(0L))
-    # normalizedDifference always returns band "nd"; renamed at the collection level
-    # below so the rename survives the reduce() step.
-    image$divide(10000)$
-      updateMask(cloud_mask)$
-      normalizedDifference(c("B8", "B4"))
-  }
-
-  # Compute stdDev as sqrt(variance) rather than reduce(stdDev()) directly.
-  # Both are mathematically equivalent but variance() → sqrt() avoids a GEE
-  # issue where reduce(stdDev()) silently returns a masked image when the
-  # computation graph is complex (globally distributed points in one batch).
-  # "nd" → variance → "nd_variance" → sqrt → rename → "NDVI_stdDev"
-  ee$ImageCollection("COPERNICUS/S2_SR_HARMONIZED")$
-    filterDate(.S2_START, .S2_END)$
-    filterBounds(region)$                                              # spatial filter first
-    filter(ee$Filter$lt("CLOUDY_PIXEL_PERCENTAGE", .S2_MAX_CLOUD))$
-    filter(ee$Filter$calendarRange(5, 9, "month"))$
-    select(.S2_BANDS_NDVI)$
-    map(process)$
-    reduce(ee$Reducer$variance())$
-    sqrt()$rename("NDVI_stdDev")
 }
 
 
@@ -464,60 +428,6 @@ extract_sar <- function(profiles_df, gee_project = NULL, use_drive = FALSE) {
                  batch_size = 100L, scale = 30L, use_drive = use_drive)
 }
 
-extract_ndvi_stddev <- function(profiles_df, gee_project = NULL,
-                                 batch_size = 10L, use_drive = FALSE) {
-  suppressPackageStartupMessages({ library(rgee); library(dplyr) })
-  initialize_gee(gee_project)
-
-  # Sort geographically so each batch's bbox is small and filterBounds is tight.
-  profiles_df <- profiles_df[order(profiles_df$longitude, profiles_df$latitude), ]
-
-  n         <- nrow(profiles_df)
-  n_batches <- ceiling(n / batch_size)
-  all_rows  <- list()
-  n_failed  <- 0L
-
-  message(sprintf("[GEE] Extracting NDVI_stdDev (%d pts, batch=%d, scale=30m, tileScale=%d, buffer=%dm)",
-                  n, batch_size, .TILE_SCALE, .S2_BUFFER_M))
-
-  for (i in seq(1L, n, by = batch_size)) {
-    end_idx   <- min(i + batch_size - 1L, n)
-    batch_df  <- profiles_df[i:end_idx, ]
-    fc        <- .df_to_ee_fc(batch_df)
-    batch_num <- ceiling(i / batch_size)
-
-    tryCatch({
-      region <- fc$geometry()$bounds()$buffer(.S2_BUFFER_M)
-      img    <- .build_ndvi_stddev_local(region)
-
-      result_fc <- img$reduceRegions(
-        collection = fc,
-        reducer    = ee$Reducer$first(),
-        scale      = 30L,
-        tileScale  = .TILE_SCALE
-      )
-      batch_df_out <- .ee_fc_result_to_df(result_fc, "NDVI_stdDev", use_drive)
-      all_rows <- c(all_rows, list(batch_df_out))
-
-      if (batch_num %% 10L == 0L || batch_num == n_batches)
-        message(sprintf("  Batch %d/%d OK  (%d rows so far)",
-                        batch_num, n_batches, sum(vapply(all_rows, nrow, 0L))))
-    }, error = function(e) {
-      n_failed <<- n_failed + 1L
-      message(sprintf("  Batch %d/%d FAILED: %s", batch_num, n_batches, conditionMessage(e)))
-    })
-  }
-
-  message(sprintf("[GEE] NDVI_stdDev complete — %d rows, %d batches failed",
-                  sum(vapply(all_rows, nrow, 0L)), n_failed))
-
-  if (length(all_rows) == 0L) return(data.frame())
-  result <- dplyr::bind_rows(all_rows)
-  # Diagnostic: show what GEE actually returned so band-naming issues are visible.
-  message(sprintf("  Columns returned: %s", paste(names(result), collapse = ", ")))
-  result
-}
-
 extract_s2_all <- function(profiles_df, gee_project = NULL, use_drive = FALSE) {
   suppressPackageStartupMessages(library(rgee))
   initialize_gee(gee_project)
@@ -546,7 +456,7 @@ extract_climate <- function(profiles_df, gee_project = NULL, use_drive = FALSE) 
 #
 # Returns a data.frame ready for write_covariates_csv().
 # =============================================================================
-combine_covariates <- function(profiles_df, topo, sar, ndvi_sd, s2, climate) {
+combine_covariates <- function(profiles_df, topo, sar, s2, climate) {
   suppressPackageStartupMessages(library(dplyr))
 
   .merge_gee <- function(main, sub) {
@@ -560,7 +470,7 @@ combine_covariates <- function(profiles_df, topo, sar, ndvi_sd, s2, climate) {
   result <- profiles_df |>
     mutate(profile_id = as.character(profile_id))
 
-  for (df in list(climate, topo, sar, s2, ndvi_sd)) {
+  for (df in list(climate, topo, sar, s2)) {
     result <- .merge_gee(result, df)
   }
 

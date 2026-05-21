@@ -20,11 +20,10 @@
 #     gee_climate           : TerraClimate MAT_C + MAP_mm (2000–2022)
 #     gee_topo              : 7 topography/channel bands (30 m)
 #     gee_sar               : Sentinel-1 VV/VH composite (2020–2023, 30 m)
-#     gee_ndvi_stddev       : NDVI seasonal variability (2020–2023, 30 m)
 #     gee_s2                : S2 raw (9 bands) + derived (5 bands) in one pass (2020–2023, 30 m)
 #
 #   Phase 3 — Combine + output:
-#     global_covariates     : Merged 27-band canonical data.frame
+#     global_covariates     : Merged 26-band canonical data.frame
 #     covariates_file       : CorePoints_Covariates_BC_Canada.csv
 #
 # Extensibility:
@@ -117,11 +116,6 @@ list(
     extract_sar(profiles_for_extraction, gee_project = GEE_PROJECT)
   ),
 
-  tar_target(
-    gee_ndvi_stddev,
-    extract_ndvi_stddev(profiles_for_extraction, gee_project = GEE_PROJECT)
-  ),
-
   # S2 raw reflectance (9 bands) + derived indices (5 bands) in a single target.
   # One S2 median composite is built per batch — previously two separate targets
   # doubled the number of GEE compute calls for the same imagery.
@@ -139,7 +133,6 @@ list(
       profiles_for_extraction,
       topo    = gee_topo,
       sar     = gee_sar,
-      ndvi_sd = gee_ndvi_stddev,
       s2      = gee_s2,
       climate = gee_climate
     )
