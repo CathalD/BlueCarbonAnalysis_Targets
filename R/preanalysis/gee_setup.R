@@ -20,14 +20,14 @@
 #
 # project : GEE cloud project ID (NULL uses the project stored in the token)
 # ---------------------------------------------------------------------------
-initialize_gee <- function(project = NULL) {
+initialize_gee <- function(project = NULL, drive = FALSE) {
   suppressPackageStartupMessages(library(rgee))
 
   tryCatch({
     if (!is.null(project)) {
-      rgee::ee_Initialize(project = project, quiet = TRUE)
+      rgee::ee_Initialize(project = project, drive = drive, quiet = TRUE)
     } else {
-      rgee::ee_Initialize(quiet = TRUE)
+      rgee::ee_Initialize(drive = drive, quiet = TRUE)
     }
     invisible(TRUE)
   }, error = function(e) {
