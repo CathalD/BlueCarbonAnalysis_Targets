@@ -380,7 +380,7 @@ stopifnot(length(CANONICAL_BANDS) == 27L)
   all_rows  <- list()
   n_failed  <- 0L
 
-  message(sprintf("[GEE] Extracting S2 all bands — raw (9) + derived (5) combined",))
+  message("[GEE] Extracting S2 all bands — raw (9) + derived (5) combined")
   message(sprintf("      %d pts | batch=%d | scale=%dm | tileScale=%d | buffer=%dm",
                   n, batch_size, scale, .TILE_SCALE, .S2_BUFFER_M))
 
