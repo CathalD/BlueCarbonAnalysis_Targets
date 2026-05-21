@@ -345,11 +345,22 @@ stopifnot(length(CANONICAL_BANDS) == 26L)
 
 # Combined S2 batch extraction: builds ONE spatially filtered S2 median per
 # batch, then extracts all 14 bands (raw reflectance + derived indices) in a
-# single reduceRegions() call.  Previously, raw and derived were separate
-# targets → 2 × n_batches S2 composites computed; this halves that to n_batches.
+# single reduceRegions() call.
+#
+# Robustness notes:
+#   batch_size = 5  — smaller bbox per batch → tighter filterBounds → fewer
+#     S2 scenes in the composite → faster GEE computation per call.
+#   BATCH_TIMEOUT_S — per-batch elapsed wall-clock timeout via setTimeLimit().
+#     GEE hangs (not errors) on complex computation graphs; setTimeLimit()
+#     converts the hang into a catchable R error so the loop continues.
+#   INTER_BATCH_SLEEP_S — brief pause between batches to avoid GEE quota
+#     exhaustion on long runs.
 #
 # use_drive : passed to .ee_fc_result_to_df()
-.extract_batch_s2_all <- function(profiles_df, batch_size = 10L,
+.BATCH_TIMEOUT_S    <- 300L   # 5-minute wall-clock limit per S2 batch
+.INTER_BATCH_SLEEP_S <- 1L    # seconds between batches (quota breathing room)
+
+.extract_batch_s2_all <- function(profiles_df, batch_size = 5L,
                                    scale = .S2_SCALE, use_drive = FALSE) {
   suppressPackageStartupMessages(library(dplyr))
 
@@ -364,8 +375,8 @@ stopifnot(length(CANONICAL_BANDS) == 26L)
   n_failed  <- 0L
 
   message("[GEE] Extracting S2 all bands — raw (9) + derived (5) combined")
-  message(sprintf("      %d pts | batch=%d | scale=%dm | tileScale=%d | buffer=%dm",
-                  n, batch_size, scale, .TILE_SCALE, .S2_BUFFER_M))
+  message(sprintf("      %d pts | batch=%d | scale=%dm | tileScale=%d | buffer=%dm | timeout=%ds",
+                  n, batch_size, scale, .TILE_SCALE, .S2_BUFFER_M, .BATCH_TIMEOUT_S))
 
   for (i in seq(1L, n, by = batch_size)) {
     end_idx   <- min(i + batch_size - 1L, n)
@@ -373,11 +384,15 @@ stopifnot(length(CANONICAL_BANDS) == 26L)
     fc        <- .df_to_ee_fc(batch_df)
     batch_num <- ceiling(i / batch_size)
 
+    # Set a per-batch elapsed timeout. GEE sometimes hangs indefinitely on
+    # complex computation graphs rather than returning an error. setTimeLimit()
+    # converts the hang into a catchable "reached elapsed time limit" error
+    # so the outer tryCatch can log and skip rather than stalling forever.
+    setTimeLimit(elapsed = .BATCH_TIMEOUT_S, transient = TRUE)
     tryCatch({
       region   <- fc$geometry()$bounds()$buffer(.S2_BUFFER_M)
-      s2_local <- .build_s2_median(region)   # ONE composite per batch
+      s2_local <- .build_s2_median(region)
 
-      # Merge raw + derived into a single 14-band image before reduceRegions
       img <- .s2_select_raw(s2_local)$addBands(.s2_select_derived(s2_local))
 
       result_fc <- img$reduceRegions(
@@ -394,8 +409,14 @@ stopifnot(length(CANONICAL_BANDS) == 26L)
                         batch_num, n_batches, sum(vapply(all_rows, nrow, 0L))))
     }, error = function(e) {
       n_failed <<- n_failed + 1L
-      message(sprintf("  Batch %d/%d FAILED: %s", batch_num, n_batches, conditionMessage(e)))
+      label <- if (grepl("elapsed time limit", conditionMessage(e), ignore.case = TRUE))
+        sprintf("TIMEOUT (>%ds)", .BATCH_TIMEOUT_S)
+      else
+        conditionMessage(e)
+      message(sprintf("  Batch %d/%d FAILED: %s", batch_num, n_batches, label))
     })
+
+    Sys.sleep(.INTER_BATCH_SLEEP_S)
   }
 
   message(sprintf("[GEE] S2 all bands complete — %d rows, %d batches failed",
@@ -431,7 +452,7 @@ extract_sar <- function(profiles_df, gee_project = NULL, use_drive = FALSE) {
 extract_s2_all <- function(profiles_df, gee_project = NULL, use_drive = FALSE) {
   suppressPackageStartupMessages(library(rgee))
   initialize_gee(gee_project)
-  .extract_batch_s2_all(profiles_df, batch_size = 10L,
+  .extract_batch_s2_all(profiles_df, batch_size = 5L,
                          scale = .S2_SCALE, use_drive = use_drive)
 }
 
