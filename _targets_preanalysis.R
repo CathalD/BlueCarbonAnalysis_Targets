@@ -48,7 +48,7 @@ lapply(
 # Set TEST_MODE <- TRUE to run on 10 random points from the real dataset before
 # committing to the full extraction. Flip to FALSE for the production run.
 TEST_MODE <- TRUE
-TEST_N    <- 10L
+TEST_N    <- 50L   # 50 pts → 5 geographic batches of 10 after sort; keeps each bbox local
 # Found in the Python notebook: ee.Initialize(project='...')
 GEE_PROJECT <- "north-star-project-470316"
 
