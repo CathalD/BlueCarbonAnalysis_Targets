@@ -9,3 +9,7 @@ transfer:
 preanalysis:
   script: _targets_preanalysis.R
   store: _targets_preanalysis
+
+embedding:
+  script: _targets_embedding.R
+  store: _targets_embedding
