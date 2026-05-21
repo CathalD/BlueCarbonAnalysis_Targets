@@ -21,8 +21,7 @@
 #     gee_topo              : 7 topography/channel bands (30 m)
 #     gee_sar               : Sentinel-1 VV/VH composite (2020–2023, 30 m)
 #     gee_ndvi_stddev       : NDVI seasonal variability (2020–2023, 30 m)
-#     gee_s2_raw            : S2 raw reflectance 9 bands (2020–2023, 30 m)
-#     gee_s2_derived        : S2 derived indices 5 bands (2020–2023, 30 m)
+#     gee_s2                : S2 raw (9 bands) + derived (5 bands) in one pass (2020–2023, 30 m)
 #
 #   Phase 3 — Combine + output:
 #     global_covariates     : Merged 27-band canonical data.frame
@@ -109,14 +108,12 @@ list(
     extract_ndvi_stddev(profiles_for_gee, gee_project = GEE_PROJECT)
   ),
 
+  # S2 raw reflectance (9 bands) + derived indices (5 bands) in a single target.
+  # One S2 median composite is built per batch — previously two separate targets
+  # doubled the number of GEE compute calls for the same imagery.
   tar_target(
-    gee_s2_raw,
-    extract_s2_raw(profiles_for_gee, gee_project = GEE_PROJECT)
-  ),
-
-  tar_target(
-    gee_s2_derived,
-    extract_s2_derived(profiles_for_gee, gee_project = GEE_PROJECT)
+    gee_s2,
+    extract_s2_all(profiles_for_gee, gee_project = GEE_PROJECT)
   ),
 
   # ── Phase 3: Combine all extractions ───────────────────────────────────────
@@ -129,8 +126,7 @@ list(
       topo    = gee_topo,
       sar     = gee_sar,
       ndvi_sd = gee_ndvi_stddev,
-      s2_raw  = gee_s2_raw,
-      s2_der  = gee_s2_derived,
+      s2      = gee_s2,
       climate = gee_climate
     )
   ),

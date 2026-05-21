@@ -47,8 +47,11 @@ stopifnot(length(CANONICAL_BANDS) == 27L)
 .S2_MAX_CLOUD   <- 20L   # % cloud cover threshold (collection-level pre-filter)
 .S2_IMAGE_LIMIT <- 20L   # max scenes per batch area (least cloudy first)
 .S2_BUFFER_M    <- 5000L # metres buffer around each batch of points
-.S2_SCALE       <- 10L   # native S2 optical resolution (B2/B4/B8 = 10 m)
-.TILE_SCALE     <- 4L    # GEE tileScale for reduceRegions (4 = 4× more memory tiles)
+# scale = 30 rather than 10: for point extraction at core locations the 9×
+# reduction in pixel count is the dominant speedup; sub-pixel accuracy gain
+# from 10 m is negligible for ecosystem-scale carbon stock prediction.
+.S2_SCALE       <- 30L
+.TILE_SCALE     <- 8L    # GEE tileScale — 8 gives more memory tiles for large reductions
 
 # Bands needed inside the cloud-mask / index functions — select early so GEE
 # only loads these tiles, not all 13 S2 bands.
@@ -367,15 +370,14 @@ stopifnot(length(CANONICAL_BANDS) == 27L)
 }
 
 
-# S2-specific batch extraction: builds a spatially filtered S2 median per batch,
-# then extracts band values. Compositing (median) happens at collection level so
-# reduceRegions() runs once per batch against a single composite image.
+# Combined S2 batch extraction: builds ONE spatially filtered S2 median per
+# batch, then extracts all 14 bands (raw reflectance + derived indices) in a
+# single reduceRegions() call.  Previously, raw and derived were separate
+# targets → 2 × n_batches S2 composites computed; this halves that to n_batches.
 #
-# band_fn   : function(s2_median_image) → ee.Image with renamed bands
 # use_drive : passed to .ee_fc_result_to_df()
-.extract_batch_s2 <- function(profiles_df, name, band_fn,
-                               batch_size = 25L, scale = .S2_SCALE,
-                               use_drive = FALSE) {
+.extract_batch_s2_all <- function(profiles_df, batch_size = 25L,
+                                   scale = .S2_SCALE, use_drive = FALSE) {
   suppressPackageStartupMessages(library(dplyr))
 
   n         <- nrow(profiles_df)
@@ -383,8 +385,9 @@ stopifnot(length(CANONICAL_BANDS) == 27L)
   all_rows  <- list()
   n_failed  <- 0L
 
-  message(sprintf("[GEE] Extracting %s (%d pts, batch=%d, scale=%dm, tileScale=%d, buffer=%dm)",
-                  name, n, batch_size, scale, .TILE_SCALE, .S2_BUFFER_M))
+  message(sprintf("[GEE] Extracting S2 all bands — raw (9) + derived (5) combined",))
+  message(sprintf("      %d pts | batch=%d | scale=%dm | tileScale=%d | buffer=%dm",
+                  n, batch_size, scale, .TILE_SCALE, .S2_BUFFER_M))
 
   for (i in seq(1L, n, by = batch_size)) {
     end_idx   <- min(i + batch_size - 1L, n)
@@ -393,19 +396,19 @@ stopifnot(length(CANONICAL_BANDS) == 27L)
     batch_num <- ceiling(i / batch_size)
 
     tryCatch({
-      # Per-batch spatial filter → build median composite → apply band_fn
-      # (⑥ compositing: single median image per batch, not per-image extraction)
       region   <- fc$geometry()$bounds()$buffer(.S2_BUFFER_M)
-      s2_local <- .build_s2_median(region)   # already applies filterBounds + select + map
-      img      <- band_fn(s2_local)
+      s2_local <- .build_s2_median(region)   # ONE composite per batch
+
+      # Merge raw + derived into a single 14-band image before reduceRegions
+      img <- .s2_select_raw(s2_local)$addBands(.s2_select_derived(s2_local))
 
       result_fc <- img$reduceRegions(
         collection = fc,
         reducer    = ee$Reducer$first(),
         scale      = scale,
-        tileScale  = .TILE_SCALE   # ④ tileScale = 4
+        tileScale  = .TILE_SCALE
       )
-      batch_df_out <- .ee_fc_result_to_df(result_fc, name, use_drive)
+      batch_df_out <- .ee_fc_result_to_df(result_fc, "S2 all bands", use_drive)
       all_rows <- c(all_rows, list(batch_df_out))
 
       if (batch_num %% 10L == 0L || batch_num == n_batches)
@@ -417,8 +420,8 @@ stopifnot(length(CANONICAL_BANDS) == 27L)
     })
   }
 
-  message(sprintf("[GEE] %s complete — %d rows, %d batches failed",
-                  name, sum(vapply(all_rows, nrow, 0L)), n_failed))
+  message(sprintf("[GEE] S2 all bands complete — %d rows, %d batches failed",
+                  sum(vapply(all_rows, nrow, 0L)), n_failed))
 
   if (length(all_rows) == 0L) return(data.frame())
   dplyr::bind_rows(all_rows)
@@ -456,20 +459,11 @@ extract_ndvi_stddev <- function(profiles_df, gee_project = NULL, use_drive = FAL
                  batch_size = 100L, scale = 30L, use_drive = use_drive)
 }
 
-extract_s2_raw <- function(profiles_df, gee_project = NULL, use_drive = FALSE) {
+extract_s2_all <- function(profiles_df, gee_project = NULL, use_drive = FALSE) {
   suppressPackageStartupMessages(library(rgee))
   initialize_gee(gee_project)
-  .extract_batch_s2(profiles_df, "Sentinel-2 Raw (9 bands incl. Red-Edge)",
-                    band_fn = .s2_select_raw, batch_size = 25L,
-                    scale = .S2_SCALE, use_drive = use_drive)
-}
-
-extract_s2_derived <- function(profiles_df, gee_project = NULL, use_drive = FALSE) {
-  suppressPackageStartupMessages(library(rgee))
-  initialize_gee(gee_project)
-  .extract_batch_s2(profiles_df, "Sentinel-2 Derived (5 bands)",
-                    band_fn = .s2_select_derived, batch_size = 25L,
-                    scale = .S2_SCALE, use_drive = use_drive)
+  .extract_batch_s2_all(profiles_df, batch_size = 25L,
+                         scale = .S2_SCALE, use_drive = use_drive)
 }
 
 extract_climate <- function(profiles_df, gee_project = NULL, use_drive = FALSE) {
@@ -493,8 +487,7 @@ extract_climate <- function(profiles_df, gee_project = NULL, use_drive = FALSE) 
 #
 # Returns a data.frame ready for write_covariates_csv().
 # =============================================================================
-combine_covariates <- function(profiles_df, topo, sar, ndvi_sd,
-                                s2_raw, s2_der, climate) {
+combine_covariates <- function(profiles_df, topo, sar, ndvi_sd, s2, climate) {
   suppressPackageStartupMessages(library(dplyr))
 
   .merge_gee <- function(main, sub) {
@@ -508,8 +501,7 @@ combine_covariates <- function(profiles_df, topo, sar, ndvi_sd,
   result <- profiles_df |>
     mutate(profile_id = as.character(profile_id))
 
-  # Climate first (cheapest, filters applied here in Python notebook order)
-  for (df in list(climate, topo, sar, s2_raw, s2_der, ndvi_sd)) {
+  for (df in list(climate, topo, sar, s2, ndvi_sd)) {
     result <- .merge_gee(result, df)
   }
 
