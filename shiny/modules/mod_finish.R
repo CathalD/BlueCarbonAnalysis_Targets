@@ -16,6 +16,7 @@ mod_finish_ui <- function(id) {
 
 mod_finish_server <- function(id, setup_state, data_state, raster_state, project_root) {
   moduleServer(id, function(input, output, session) {
+    ns <- session$ns
 
     saved <- reactiveVal(FALSE)
     save_error_msg <- reactiveVal(NULL)
