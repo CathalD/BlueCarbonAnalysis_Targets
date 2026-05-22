@@ -105,6 +105,17 @@ pre.csv-example {
   margin-bottom: 1rem;
 }
 
+/* ── Copy-paste code blocks ──────────────────────────────────────────────── */
+pre.code-block {
+  font-size: 13px;
+  background: #f1f3f5;
+  border-left: 3px solid #2c7a4b;
+  padding: 10px 14px;
+  border-radius: 4px;
+  margin-bottom: 1rem;
+  white-space: pre-wrap;
+}
+
 /* ── Wizard nav ──────────────────────────────────────────────────────────── */
 .wizard-nav {
   padding-top: 8px;
