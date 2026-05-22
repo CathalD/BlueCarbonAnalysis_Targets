@@ -14,4 +14,7 @@ tm1 <- function()   targets::tar_make(names = c(
   "report_nonspatial", "report_rf"
 ))
 
+app <- function() shiny::runApp("shiny", launch.browser = TRUE)
+
 message("targets loaded. Use tm(), tv(), tl(target_name), tm1() for full pipeline.")
+message("Use app() to open the Project Setup Wizard in your browser.")
