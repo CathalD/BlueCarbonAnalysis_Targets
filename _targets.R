@@ -69,5 +69,5 @@ list(
 
   # ── REPORTS ───────────────────────────────────────────────────────────────
   tar_quarto(report_nonspatial, path = "reports/step1_nonspatial.qmd"),
-  tar_quarto(report_rf,         path = "reports/step3_random_forest.qmd", error = "null")
+  tar_quarto(report_rf,         path = "reports/step3_random_forest.qmd")
 )
