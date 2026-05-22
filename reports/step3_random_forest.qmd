@@ -19,33 +19,14 @@ execute:
 ---
 
 ```{r setup}
-if (!file.exists("_targets")) setwd("..")
+if (!file.exists("_targets_rf")) setwd("..")
 library(targets); library(dplyr); library(ggplot2); library(knitr)
 
-cfg                <- tar_read(cfg)
-stratum_summary    <- tar_read(stratum_summary)
-rf_models          <- tar_read(rf_models)
-rf_importance_plot <- tar_read(rf_importance_plot)
-rf_maps            <- tar_read(rf_maps)
-```
-
-```{r no-raster-check, results='asis'}
-if (is.null(rf_models)) {
-  cat(
-    "## Spatial analysis not yet configured\n\n",
-    "No covariate raster was provided when this pipeline ran, so the ",
-    "random forest spatial model was skipped.\n\n",
-    "**To generate spatial prediction maps:**\n\n",
-    "1. Open the Project Setup Wizard: run `app()` in the RStudio Console\n",
-    "2. Complete the wizard — in **Step 3**, uncheck *Skip* and enter your raster filename\n",
-    "3. Click **Save Setup Files** in Step 4\n",
-    "4. Re-run `targets::tar_make()` — completed targets are skipped automatically\n\n",
-    "---\n\n",
-    "*Non-spatial results (depth harmonization, stratum summaries, simple extrapolation) ",
-    "are in `reports/step1_nonspatial.html`.*\n"
-  )
-  knitr::knit_exit()
-}
+cfg                <- tar_read(cfg_rf,             store = "_targets_rf")
+stratum_summary    <- tar_read(stratum_summary,    store = "_targets")
+rf_models          <- tar_read(rf_models,          store = "_targets_rf")
+rf_importance_plot <- tar_read(rf_importance_plot, store = "_targets_rf")
+rf_maps            <- tar_read(rf_maps,            store = "_targets_rf")
 ```
 
 ## What this step does
