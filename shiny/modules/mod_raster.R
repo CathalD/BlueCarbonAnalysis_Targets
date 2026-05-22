@@ -166,5 +166,3 @@ mod_raster_server <- function(id, project_root) {
     })
   })
 }
-
-`%||%` <- function(a, b) if (is.null(a)) b else a

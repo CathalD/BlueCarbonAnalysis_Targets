@@ -136,3 +136,12 @@ pre.code-block {
   padding-top: 8px;
   border-top: 1px solid #dee2e6;
 }
+
+/* ── Guide / pipeline cards ──────────────────────────────────────────────── */
+.opacity-60 {
+  opacity: 0.6;
+}
+
+.card.border-success { border-left: 4px solid #198754 !important; }
+.card.border-danger  { border-left: 4px solid #dc3545 !important; }
+.card.border-warning { border-left: 4px solid #ffc107 !important; }
