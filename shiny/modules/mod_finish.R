@@ -213,16 +213,30 @@ commands_ui <- function(ns, setup_state, raster_state, input) {
         div(class = "pipeline-block",
           tags$p(tags$strong("Step 1 — Core data processing"),
             tags$span(class = "badge bg-success ms-2", "always runs")),
-          if (!has_r) {
-            p(class = "text-muted small",
-              "Produces: depth harmonization, stratum summary, VM0033 estimates, ",
-              "and ", code("reports/step1_nonspatial.html"))
-          } else {
-            p(class = "text-muted small",
-              "Produces: non-spatial report + RF spatial map")
-          },
+          p(class = "text-muted small",
+            "Produces: depth harmonization, per-stratum carbon stock table, ",
+            "exploratory plots, and ", code("reports/step1_nonspatial.html")),
           tags$pre(class = "code-block", "targets::tar_make()")
         ),
+
+        # RF pipeline (optional, needs raster)
+        if (run_rf) {
+          tagList(
+            hr(),
+            div(class = "pipeline-block",
+              tags$p(tags$strong("Step 2 — Random forest spatial map"),
+                tags$span(class = "badge bg-primary ms-2", "~5 min")),
+              p(class = "text-muted small",
+                "Produces: 25-m carbon stock map, variable importance, ",
+                "and ", code("reports/step3_random_forest.html")),
+              tags$pre(class = "code-block",
+'targets::tar_make(
+  script = "_targets_rf.R",
+  store  = "_targets_rf"
+)')
+            )
+          )
+        },
 
         # GEE auth block (shown if any GEE pipeline selected)
         if ((run_tl || run_emb) && has_g) {
@@ -238,12 +252,12 @@ commands_ui <- function(ns, setup_state, raster_state, input) {
           )
         },
 
-        # Pipeline 2 (needed by TL pipelines)
+        # GEE pre-analysis (needed by TL pipelines)
         if (run_tl || run_emb) {
           tagList(
             hr(),
             div(class = "pipeline-block",
-              tags$p(tags$strong("Step 2 — Extract global covariates from GEE"),
+              tags$p(tags$strong("Step 3 — Extract global covariates from GEE"),
                 tags$span(class = "badge bg-secondary ms-2", "~60 min")),
               p(class = "text-muted small",
                 "Run once. Re-running is safe — completed batches are skipped."),
@@ -256,12 +270,12 @@ commands_ui <- function(ns, setup_state, raster_state, input) {
           )
         },
 
-        # Pipeline 3
+        # Wadoux TL
         if (run_tl) {
           tagList(
             hr(),
             div(class = "pipeline-block",
-              tags$p(tags$strong("Step 3 — Wadoux transfer learning"),
+              tags$p(tags$strong("Step 4 — Wadoux transfer learning"),
                 tags$span(class = "badge bg-secondary ms-2", "~15 min")),
               tags$pre(class = "code-block",
 'targets::tar_make(
@@ -272,12 +286,12 @@ commands_ui <- function(ns, setup_state, raster_state, input) {
           )
         },
 
-        # Pipeline 4
+        # Embedding TL
         if (run_emb) {
           tagList(
             hr(),
             div(class = "pipeline-block",
-              tags$p(tags$strong("Step 4 — Embedding transfer learning"),
+              tags$p(tags$strong("Step 5 — Embedding transfer learning"),
                 tags$span(class = "badge bg-secondary ms-2", "~30 min")),
               tags$pre(class = "code-block",
 'targets::tar_make(
