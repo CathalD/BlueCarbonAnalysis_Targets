@@ -63,11 +63,10 @@ mod_raster_server <- function(id, project_root) {
 
     raster_info <- reactiveVal(NULL)
 
-    observeEvent(input$check_raster, {
-      rname <- trimws(input$raster_name %||% "")
+    check_raster_file <- function(rname) {
+      rname <- trimws(rname %||% "")
       if (nchar(rname) == 0) {
-        raster_info(list(found = FALSE,
-          msg = "Enter a filename or path above, then click Check file."))
+        raster_info(NULL)
         return()
       }
 
@@ -103,11 +102,22 @@ mod_raster_server <- function(id, project_root) {
       })
 
       raster_info(info)
+    }
+
+    # Auto-validate when filename changes (debounced to avoid mid-typing checks)
+    raster_name_d <- debounce(reactive(input$raster_name), 600)
+    observeEvent(raster_name_d(), {
+      if (!isTRUE(input$skip_raster)) check_raster_file(raster_name_d())
+    }, ignoreNULL = FALSE)
+
+    # Manual re-check button still works
+    observeEvent(input$check_raster, {
+      check_raster_file(input$raster_name)
     })
 
     output$raster_status <- renderUI({
       info <- raster_info()
-      if (is.null(info)) return(helpText("Click 'Check file' to validate."))
+      if (is.null(info)) return(helpText("Enter a filename above — it will be validated automatically."))
       if (!info$found) {
         div(class = "alert alert-danger mt-2",
           tags$strong("❌ File not found"), tags$br(),
