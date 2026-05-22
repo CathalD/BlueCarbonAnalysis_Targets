@@ -116,6 +116,21 @@ pre.code-block {
   white-space: pre-wrap;
 }
 
+/* ── Pipeline option rows ────────────────────────────────────────────────── */
+.pipeline-option {
+  border-left: 3px solid #dee2e6;
+  padding-left: 12px;
+  transition: border-color 0.15s;
+}
+
+.pipeline-option:has(input:checked) {
+  border-left-color: #2c7a4b;
+}
+
+.pipeline-block {
+  margin-bottom: 0.5rem;
+}
+
 /* ── Wizard nav ──────────────────────────────────────────────────────────── */
 .wizard-nav {
   padding-top: 8px;
