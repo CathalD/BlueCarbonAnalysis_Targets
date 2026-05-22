@@ -139,7 +139,16 @@ mod_finish_server <- function(id, setup_state, data_state, raster_state, project
               "Run these in order. Each command can be re-run safely — ",
               "completed steps are always skipped."),
 
-            tags$strong("Step 1 — Core data processing & local RF map (5–15 min):"),
+            if (!has_raster) {
+              div(class = "alert alert-info py-2 mb-3",
+                tags$strong("No covariate raster set."),
+                " The pipeline will produce depth harmonization, stratum summaries, ",
+                "and the non-spatial HTML report. Spatial prediction maps will be ",
+                "skipped. You can add a raster later and re-run."
+              )
+            },
+
+            tags$strong("Step 1 — Core data processing (5–15 min):"),
             tags$pre(class = "code-block",
 "targets::tar_make()"),
 
