@@ -17,3 +17,11 @@ preanalysis:
 embedding:
   script: _targets_embedding.R
   store: _targets_embedding
+
+bluecarbon:
+  script: _targets_bluecarbon.R
+  store: _targets_bluecarbon
+
+seqrates:
+  script: _targets_seqrates.R
+  store: _targets_seqrates

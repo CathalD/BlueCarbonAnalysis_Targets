@@ -9,8 +9,14 @@ tl   <- function(x)  targets::tar_load(!!rlang::ensym(x))
 tr   <- function(x)  targets::tar_read(x)
 
 # RF pipeline (Step 3: spatial prediction maps)
-tmrf <- function()   targets::tar_make(script = "_targets_rf.R", store = "_targets_rf")
+tmrf <- function()   targets::tar_make(script = "_targets_rf.R",         store = "_targets_rf")
+
+# BlueCarbon compaction correction + stock comparison
+tmbc <- function()   targets::tar_make(script = "_targets_bluecarbon.R", store = "_targets_bluecarbon")
+
+# Sequestration rates (requires core_chronology.csv)
+tmsr <- function()   targets::tar_make(script = "_targets_seqrates.R",   store = "_targets_seqrates")
 
 app  <- function()   shiny::runApp("shiny", launch.browser = TRUE)
 
-message("Shortcuts: tm() = main pipeline | tmrf() = RF spatial maps | app() = setup wizard")
+message("Shortcuts: tm() | tmrf() | tmbc() | tmsr() | app()")
