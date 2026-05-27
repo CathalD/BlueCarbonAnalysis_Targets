@@ -45,15 +45,32 @@ run_compaction_correction <- function(samples_path, compaction_path) {
     message("[bluecarbon] No compaction measurement for: ",
             paste(uncorrected, collapse = ", "), " — using 0% (no correction).")
 
-  # Correct depths and bulk density for compaction
-  BlueCarbon::decompact(
-    samples_prep,
+  # Rename to BlueCarbon's default column names (mind / maxd / dbd) before calling
+  # decompact(). This guarantees the corrected output columns are always named
+  # mind_corrected / maxd_corrected / dbd_corrected regardless of package version.
+  # (When project-specific names like "depth_top_cm" are passed as the mind arg,
+  # some versions of BlueCarbon append a second "depth_top_cm" column instead of
+  # "mind_corrected", producing an unworkable base-R data.frame with duplicate names.)
+  samples_bc <- samples_prep
+  names(samples_bc)[names(samples_bc) == "depth_top_cm"]       <- "mind"
+  names(samples_bc)[names(samples_bc) == "depth_bottom_cm"]    <- "maxd"
+  names(samples_bc)[names(samples_bc) == "bulk_density_g_cm3"] <- "dbd"
+
+  decompacted <- BlueCarbon::decompact(
+    samples_bc,
     core       = "core_id",
     compaction = "compaction",
-    mind       = "depth_top_cm",
-    maxd       = "depth_bottom_cm",
-    dbd        = "bulk_density_g_cm3"
+    mind       = "mind",
+    maxd       = "maxd",
+    dbd        = "dbd"
   )
+
+  # Rename standard BlueCarbon names back to project conventions for the
+  # original (uncorrected) columns; keep mind_corrected / maxd_corrected / dbd_corrected.
+  names(decompacted)[names(decompacted) == "mind"] <- "depth_top_cm"
+  names(decompacted)[names(decompacted) == "maxd"] <- "depth_bottom_cm"
+  names(decompacted)[names(decompacted) == "dbd"]  <- "bulk_density_g_cm3"
+  decompacted
 }
 
 # ── 2. BlueCarbon OC stocks (linear extrapolation to 100 cm) ─────────────────
@@ -115,12 +132,10 @@ run_extrapolation_test <- function(decompacted_samples, depth = 100) {
 #   bulk_density      → corrected for compaction (density increases when core expands)
 
 prepare_bc_cores_for_harmonization <- function(locations_path, decompacted_samples) {
-  # BlueCarbon::decompact() keeps both the original column names (depth_top_cm,
-  # depth_bottom_cm, bulk_density_g_cm3) AND the corrected variants (mind_corrected,
-  # maxd_corrected, dbd_corrected). Drop the originals BEFORE calling estimate_h()
-  # so the package cannot create a second set of columns with the same names.
-  clean <- decompacted_samples |>
-    dplyr::select(-depth_top_cm, -depth_bottom_cm, -bulk_density_g_cm3)
+  # Drop the original (uncorrected) depth / density columns using base-R before
+  # any dplyr call so this is safe even if the data.frame has duplicate names.
+  drop <- c("depth_top_cm", "depth_bottom_cm", "bulk_density_g_cm3")
+  clean <- decompacted_samples[, !names(decompacted_samples) %in% drop, drop = FALSE]
 
   # estimate_h() fills depth gaps between non-contiguous samples (midpoint split).
   # Returns emin, emax, h columns — h is the effective sample thickness.
