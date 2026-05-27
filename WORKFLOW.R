@@ -68,6 +68,30 @@ targets::tar_make(script = "_targets_transfer.R", store = "_targets_transfer")
 targets::tar_make(script = "_targets_embedding.R", store = "_targets_embedding")
 
 
+# ── BLUECARBON PRE-PROCESSING (optional — requires core_compaction.csv) ───────
+# Corrects sample depths for percussion core compaction, estimates OC stocks
+# using the BlueCarbon method, and validates short-core extrapolation quality.
+# Produces core_samples_bc_processed.csv for use in the spatial pipeline.
+# Requires: install.packages("BlueCarbon")
+
+targets::tar_make(script = "_targets_bluecarbon.R", store = "_targets_bluecarbon")
+# Shortcut: tmbc()
+
+# To use compaction-corrected data in the main spatial pipeline:
+# Copy outputs/bluecarbon/core_samples_bc_processed.csv → data_raw/core_samples.csv
+# then re-run targets::tar_make() to invalidate and rebuild all downstream targets.
+
+
+# ── SEQUESTRATION RATES (optional — requires core_chronology.csv) ─────────────
+# Estimates mean OC sequestration rates (g C/m²/yr) over 100 years for cores
+# with radiometric chronology data (^210Pb or ^14C age-depth control points).
+# See Pre-Analysis Data Preparation/data_raw/core_chronology.csv for format.
+# Requires: install.packages("BlueCarbon")
+
+targets::tar_make(script = "_targets_seqrates.R", store = "_targets_seqrates")
+# Shortcut: tmsr()
+
+
 # ── VIEW RESULTS ──────────────────────────────────────────────────────────────
 # Open the app and go to the Outputs tab to download reports:
 shiny::runApp("shiny")

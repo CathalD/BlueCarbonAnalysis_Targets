@@ -1,0 +1,10 @@
+core_id,depth_cm,age_ybp,dating_method
+CHEIM3,0,0,surface
+CHEIM3,10.1,40,Pb210
+CHEIM3,25.3,101,Pb210
+CHEIM3,50.6,203,Pb210_extrapolated
+CHEIM3,69.5,278,C14
+CHENM1,0,0,surface
+CHENM1,10.8,54,Pb210
+CHENM1,25.5,128,Pb210
+CHENM1,47.5,238,C14
