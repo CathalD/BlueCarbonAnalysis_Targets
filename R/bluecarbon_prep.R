@@ -115,10 +115,17 @@ run_extrapolation_test <- function(decompacted_samples, depth = 100) {
 #   bulk_density      → corrected for compaction (density increases when core expands)
 
 prepare_bc_cores_for_harmonization <- function(locations_path, decompacted_samples) {
+  # BlueCarbon::decompact() keeps both the original column names (depth_top_cm,
+  # depth_bottom_cm, bulk_density_g_cm3) AND the corrected variants (mind_corrected,
+  # maxd_corrected, dbd_corrected). Drop the originals BEFORE calling estimate_h()
+  # so the package cannot create a second set of columns with the same names.
+  clean <- decompacted_samples |>
+    dplyr::select(-depth_top_cm, -depth_bottom_cm, -bulk_density_g_cm3)
+
   # estimate_h() fills depth gaps between non-contiguous samples (midpoint split).
   # Returns emin, emax, h columns — h is the effective sample thickness.
   with_h <- BlueCarbon::estimate_h(
-    decompacted_samples,
+    clean,
     core = "core_id",
     mind = "mind_corrected",
     maxd = "maxd_corrected"
@@ -133,7 +140,6 @@ prepare_bc_cores_for_harmonization <- function(locations_path, decompacted_sampl
       carbon_stock_kg_m2 = soc_g_kg * dbd_corrected * h / 100,
       bd_estimated       = FALSE
     ) |>
-    dplyr::select(-depth_top_cm, -depth_bottom_cm, -bulk_density_g_cm3) |>
     dplyr::rename(
       depth_top_cm       = mind_corrected,
       depth_bottom_cm    = maxd_corrected,
