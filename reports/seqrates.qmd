@@ -1,0 +1,197 @@
+---
+title: "Carbon Sequestration Rates"
+subtitle: "Radiometric age-depth chronology and OC accumulation rates"
+date: today
+engine: knitr
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    embed-resources: true
+    theme: cosmo
+    fig-width: 8
+    fig-height: 5
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r setup}
+if (!file.exists("_targets_seqrates")) setwd("..")
+library(targets)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(knitr)
+
+sr_cores   <- tar_read(sr_cores_with_ages, store = "_targets_seqrates")
+sr_rates   <- tar_read(sr_rates,           store = "_targets_seqrates")
+sr_summary <- tar_read(sr_summary,         store = "_targets_seqrates")
+sr_plot    <- tar_read(sr_plot,            store = "_targets_seqrates")
+
+has_rates <- !is.null(sr_rates) && nrow(sr_rates) > 0
+```
+
+## What this report shows
+
+Carbon sequestration rate is the mean rate at which organic carbon has
+accumulated in the soil column over a defined time window, estimated from
+radiometric age-depth chronology data (^210^Pb or ^14^C dated horizons).
+
+**Method:**
+
+1. Sample depths are decompaction-corrected (same as the BlueCarbon pipeline).
+2. Ages at each sample midpoint are assigned by **linear interpolation** between
+   chronology anchor points; samples outside the dated range are extrapolated
+   using the nearest-end slope.
+3. BlueCarbon's `estimate_seq_rate()` integrates OC accumulation over the
+   specified timeframe (default **`r if(has_rates) sr_rates$timeframe_yr[1] else 100` years**).
+
+> **Note:** Linear interpolation is a simplified age model. For Bayesian
+> age-depth modelling with uncertainty, use Bacon or Bchron externally
+> and import the output ages in the same `core_chronology.csv` format.
+
+---
+
+## Chronology overview
+
+### Cores with chronology data
+
+```{r}
+chrono_summary <- sr_cores |>
+  filter(!is.na(age)) |>
+  group_by(core_id) |>
+  summarise(
+    n_samples     = n(),
+    max_depth_cm  = round(max(depth_mid, na.rm = TRUE), 1),
+    max_age_yr    = round(max(age,       na.rm = TRUE), 0),
+    mean_acc_rate = round(max(age, na.rm=TRUE) / max(depth_mid, na.rm=TRUE), 1),
+    .groups = "drop"
+  )
+
+chrono_summary |>
+  select(
+    Core                             = core_id,
+    `Samples with ages`              = n_samples,
+    `Max depth (cm)`                 = max_depth_cm,
+    `Max age (yr BP)`                = max_age_yr,
+    `Mean accumulation (yr/cm)`      = mean_acc_rate
+  ) |>
+  kable(caption = "Summary of cores with radiometric chronology data.")
+```
+
+### Age-depth relationships
+
+```{r fig.height=4, fig.cap="Age-depth profile for each chronology core. Lines show the interpolated age model used to assign ages to samples."}
+sr_cores |>
+  filter(!is.na(age)) |>
+  ggplot(aes(x = age, y = depth_mid, colour = core_id, group = core_id)) +
+  geom_line(linewidth = 0.8) +
+  geom_point(size = 1.5, alpha = 0.7) +
+  scale_y_reverse(name = "Depth (cm)") +
+  scale_x_continuous(name = "Age (years BP)") +
+  scale_colour_brewer(palette = "Set2", name = "Core") +
+  labs(title = "Age-depth model (linear interpolation)") +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "right")
+```
+
+---
+
+## Sequestration rates
+
+```{r results="asis"}
+if (!has_rates) {
+  cat("> **No sequestration rates could be calculated.**  \n",
+      "> This occurs when no core spans the full timeframe ",
+      if (!is.null(sr_rates)) sr_rates$timeframe_yr[1] else 100,
+      " years.  \n",
+      "> Add deeper cores or increase age-depth coverage to enable rate estimation.\n")
+}
+```
+
+### Per-core rates
+
+```{r eval=has_rates, fig.cap="Carbon sequestration rates per core. Bar = rate over the target timeframe; circle = whole-core rate (total OC / max core age)."}
+if (has_rates) sr_plot
+```
+
+```{r eval=has_rates}
+if (has_rates) {
+  sr_rates |>
+    mutate(across(where(is.numeric), \(x) round(x, 1))) |>
+    select(
+      Core                         = core_id,
+      `Timeframe (yr)`             = timeframe_yr,
+      `Max age (yr BP)`            = maxage,
+      `Rate — timeframe (g C/m²/yr)`  = seq_rate_g_m2_yr,
+      `Rate — whole core (g C/m²/yr)` = seq_rate_wc_g_m2_yr
+    ) |>
+    kable(caption = "Estimated OC sequestration rates per core.")
+}
+```
+
+### Stratum summary
+
+```{r eval=has_rates}
+if (has_rates && !is.null(sr_summary)) {
+  sr_summary |>
+    mutate(across(where(is.numeric), \(x) round(x, 1))) |>
+    select(
+      Stratum                           = stratum,
+      `N cores`                         = n_cores,
+      `Mean rate (g C/m²/yr)`           = mean_seq_rate_g_m2_yr,
+      `SD (g C/m²/yr)`                  = sd_seq_rate_g_m2_yr,
+      `Mean max age (yr BP)`            = mean_maxage_yr
+    ) |>
+    kable(caption = "Per-stratum mean OC sequestration rate.")
+}
+```
+
+### SOC profiles with age annotations
+
+The plot below shows the SOC concentration profile for each chronology core,
+with sample ages labelled to illustrate how much carbon was accumulated over
+the dated interval.
+
+```{r eval=has_rates, fig.height=5, fig.cap="SOC concentration vs decompacted depth, annotated with interpolated sample ages."}
+if (has_rates) {
+  sr_cores |>
+    filter(!is.na(age)) |>
+    mutate(soc_g_kg = soc_pct * 10) |>
+    ggplot(aes(x = soc_g_kg, y = depth_mid)) +
+    geom_path(colour = "#2c7a4b", linewidth = 0.8) +
+    geom_point(aes(colour = age), size = 2.5) +
+    scale_y_reverse(name = "Decompacted depth (cm)") +
+    scale_x_continuous(name = "SOC (g/kg)") +
+    scale_colour_viridis_c(name = "Age (yr BP)", option = "plasma") +
+    facet_wrap(~core_id, scales = "free_x") +
+    labs(title = "SOC profile with age annotations") +
+    theme_minimal(base_size = 11) +
+    theme(legend.position = "bottom")
+}
+```
+
+---
+
+## Interpretation notes
+
+| Rate context | Typical range (g C/m²/yr) |
+|---|---|
+| Global tidal marshes | 100–250 |
+| Global seagrass meadows | 50–190 |
+| Global mangroves | 160–250 |
+
+*Source: Ouyang & Lee (2014), Duarte et al. (2013)*
+
+These rates reflect **historical accumulation** over the dated interval and
+may differ from modern sequestration due to land-use change, sea-level rise,
+or vegetation shifts. Whole-core rates (open circles in the plot above) are
+particularly sensitive to the age of the deepest horizon.
+
+---
+
+*Rendered: `r format(Sys.time(), "%Y-%m-%d %H:%M")` |
+BlueCarbon package: `r packageVersion("BlueCarbon")`*

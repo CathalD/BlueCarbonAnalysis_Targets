@@ -1,0 +1,241 @@
+---
+title: "BlueCarbon Compaction Correction — Method Comparison"
+subtitle: "BlueCarbon package vs VM0033 raw-depth pipeline"
+date: today
+engine: knitr
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    embed-resources: true
+    theme: cosmo
+    fig-width: 8
+    fig-height: 5
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r setup}
+if (!file.exists("_targets_bluecarbon")) setwd("..")
+library(targets)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(knitr)
+
+bc_decompacted  <- tar_read(bc_decompacted,               store = "_targets_bluecarbon")
+bc_stocks       <- tar_read(bc_stocks,                    store = "_targets_bluecarbon")
+bc_extrap       <- tar_read(bc_extrapolation_test,        store = "_targets_bluecarbon")
+bc_comparison   <- tar_read(bc_vm_comparison,             store = "_targets_bluecarbon")
+bc_comp_plot    <- tar_read(bc_comparison_plot,           store = "_targets_bluecarbon")
+bc_max_depth    <- tar_read(bc_max_depth,                 store = "_targets_bluecarbon")
+
+vm_summary <- tryCatch(
+  tar_read(stratum_summary, store = "_targets"),
+  error = function(e) NULL
+)
+
+has_vm <- !is.null(vm_summary) && !is.null(bc_comparison)
+```
+
+## What this report shows
+
+Percussion coring compresses sediment during collection. Without correction,
+depth-referenced carbon stocks will be underestimated because compressed samples
+are assigned shallower depths than they occupied in situ.
+
+This report applies **BlueCarbon package** compaction correction
+(`BlueCarbon::decompact()`) to the field cores and compares the resulting
+carbon stocks against the **VM0033 raw-depth pipeline** (`tar_make()`).
+
+The comparison answers: *how much does compaction correction change the
+estimated carbon stock at this site?*
+
+---
+
+## Compaction correction
+
+### Compaction per core
+
+```{r}
+comp_tbl <- bc_decompacted |>
+  distinct(core_id, compaction) |>
+  arrange(core_id) |>
+  mutate(
+    compaction_pct = round(compaction, 1),
+    corrected      = compaction_pct > 0
+  )
+
+comp_tbl |>
+  select(
+    `Core`               = core_id,
+    `Compaction (%)`     = compaction_pct,
+    `Correction applied` = corrected
+  ) |>
+  kable(caption = "Estimated compaction per core from field coring measurements.")
+```
+
+```{r fig.cap="Compaction percentage by core. Higher values indicate greater compression during collection."}
+ggplot(comp_tbl, aes(x = reorder(core_id, -compaction_pct), y = compaction_pct,
+                     fill = compaction_pct > 0)) +
+  geom_col(width = 0.6, show.legend = FALSE) +
+  scale_fill_manual(values = c("FALSE" = "#cccccc", "TRUE" = "#2c7a4b")) +
+  labs(x = NULL, y = "Compaction (%)") +
+  theme_minimal(base_size = 12)
+```
+
+### Effect of decompaction on sample depths
+
+Compaction correction shifts sample depths upward (decompacted sediment
+occupies more space). The plot below shows original vs corrected midpoint
+depths for each sample.
+
+```{r fig.cap="Original vs decompacted sample midpoint depth per core. Points below the 1:1 line indicate upward depth correction."}
+depth_compare <- bc_decompacted |>
+  mutate(
+    depth_mid_orig = (depth_top_cm   + depth_bottom_cm)   / 2,
+    depth_mid_corr = (mind_corrected + maxd_corrected)     / 2
+  )
+
+ggplot(depth_compare, aes(x = depth_mid_orig, y = depth_mid_corr, colour = core_id)) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", colour = "grey60") +
+  geom_point(alpha = 0.7, size = 1.8) +
+  labs(
+    x      = "Original depth midpoint (cm)",
+    y      = "Decompacted depth midpoint (cm)",
+    colour = "Core"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "right")
+```
+
+---
+
+## OC stocks per core
+
+Total OC stock estimated by BlueCarbon linear extrapolation to
+**`r bc_max_depth` cm** (the deepest core in this dataset). Columns:
+
+- **Stock to depth** — accumulated OC in the top `r bc_max_depth` cm
+- **Whole-core stock** — accumulated OC over the entire measured core length
+- **SE** — standard error of the linear extrapolation
+
+```{r}
+bc_stocks |>
+  arrange(stratum, core_id) |>
+  mutate(across(where(is.numeric), \(x) round(x, 3))) |>
+  select(
+    Stratum                  = stratum,
+    Core                     = core_id,
+    `Stock to depth (kg/m²)` = stock_kg_m2,
+    `Whole-core (kg/m²)`     = stockwc_kg_m2,
+    `SE (kg/m²)`             = stock_se_kg_m2
+  ) |>
+  kable(caption = paste0("Per-core OC stocks to ", bc_max_depth, " cm depth."))
+```
+
+```{r fig.cap="Per-core OC stocks. Bar = stock to target depth; point = whole-core stock."}
+ggplot(bc_stocks, aes(x = reorder(core_id, stock_kg_m2), y = stock_kg_m2,
+                      fill = stratum)) +
+  geom_col(width = 0.6, alpha = 0.85) +
+  geom_point(aes(y = stockwc_kg_m2), shape = 21, fill = "white",
+             colour = "grey30", size = 3) +
+  geom_errorbar(aes(ymin = stock_kg_m2 - stock_se_kg_m2,
+                    ymax = stock_kg_m2 + stock_se_kg_m2),
+                width = 0.2, colour = "grey40") +
+  scale_fill_manual(values = c(IM = "#2c7a4b", NM = "#6baed6", MF = "#fd8d3c"),
+                    na.value = "#aaaaaa") +
+  coord_flip() +
+  labs(x = NULL, y = "OC stock (kg C/m²)", fill = "Stratum") +
+  theme_minimal(base_size = 12)
+```
+
+---
+
+## Comparison with VM0033 pipeline
+
+```{r}
+#| results: asis
+if (!has_vm) {
+  cat("> **VM0033 pipeline store not found.**  \n",
+      "> Run `targets::tar_make()` first, then re-render this report to see the method comparison.\n")
+}
+```
+
+```{r eval=has_vm, fig.cap="Mean OC stock per stratum: BlueCarbon (decompacted) vs VM0033 (raw depths). Percentage label shows the relative difference attributable to compaction correction."}
+if (has_vm) bc_comp_plot
+```
+
+```{r eval=has_vm}
+if (has_vm) {
+  bc_comparison |>
+    mutate(across(where(is.numeric), \(x) round(x, 3))) |>
+    select(
+      Stratum                      = stratum,
+      `N cores`                    = n_cores,
+      `BlueCarbon mean (kg/m²)`    = mean_bc_kg_m2,
+      `BlueCarbon SD (kg/m²)`      = sd_bc_kg_m2,
+      `VM0033 mean (kg/m²)`        = mean_vm0033_kg_m2,
+      `Difference (kg/m²)`         = diff_kg_m2,
+      `Difference (%)`             = diff_pct
+    ) |>
+    kable(caption = "Per-stratum mean OC stock: BlueCarbon vs VM0033.")
+}
+```
+
+### Interpreting the difference
+
+A **positive difference** (BlueCarbon > VM0033) indicates that compaction
+correction increases stock estimates — compressed sediment had higher bulk
+density per unit compressed depth, but once expanded the per-depth stock is
+larger. A **negative difference** is unusual and may indicate that compaction
+was minimal or that the linear extrapolation underestimated stocks.
+
+---
+
+## Extrapolation validation
+
+BlueCarbon uses a linear regression of cumulative OC vs depth to extrapolate
+short cores to the target depth (`r bc_max_depth` cm). This section quantifies
+how much error that extrapolation introduces.
+
+```{r fig.cap="Extrapolation test: error (%) introduced by linear extrapolation at varying core truncation fractions. Lower error = better extrapolation quality."}
+# bc_extrap may be a ggplot directly or a list with $plot
+if (inherits(bc_extrap, "gg")) {
+  bc_extrap
+} else if (is.list(bc_extrap) && "plot" %in% names(bc_extrap)) {
+  bc_extrap$plot
+} else {
+  ggplot() +
+    labs(title = "Extrapolation test not available",
+         subtitle = paste0("Requires at least one core reaching ", bc_max_depth, " cm."),
+         x = NULL, y = NULL) +
+    theme_minimal()
+}
+```
+
+---
+
+## Using decompacted data in the spatial pipeline
+
+To run the full VM0033 spatial pipeline on compaction-corrected cores:
+
+```r
+# Copy the processed file to the data_raw folder
+file.copy(
+  "outputs/bluecarbon/core_samples_bc_processed.csv",
+  "Pre-Analysis Data Preparation/data_raw/core_samples.csv",
+  overwrite = TRUE
+)
+
+# Invalidate and rebuild all downstream targets
+targets::tar_make()
+```
+
+---
+
+*Rendered: `r format(Sys.time(), "%Y-%m-%d %H:%M")` |
+BlueCarbon package: `r packageVersion("BlueCarbon")`*
