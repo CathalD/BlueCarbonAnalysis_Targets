@@ -133,6 +133,7 @@ prepare_bc_cores_for_harmonization <- function(locations_path, decompacted_sampl
       carbon_stock_kg_m2 = soc_g_kg * dbd_corrected * h / 100,
       bd_estimated       = FALSE
     ) |>
+    dplyr::select(-depth_top_cm, -depth_bottom_cm, -bulk_density_g_cm3) |>
     dplyr::rename(
       depth_top_cm       = mind_corrected,
       depth_bottom_cm    = maxd_corrected,
@@ -224,7 +225,7 @@ plot_bc_comparison <- function(comparison_df) {
     ggplot2::labs(
       title    = "Carbon stock: BlueCarbon (decompacted) vs VM0033 (raw depths)",
       subtitle = "% label = effect of compaction correction on each stratum",
-      x = "Stratum", y = "Mean total stock to 100 cm (kg C/m²)", fill = NULL
+      x = "Stratum", y = "Mean total stock (kg C/m²)", fill = NULL
     ) +
     ggplot2::theme_minimal(base_size = 12) +
     ggplot2::theme(legend.position = "bottom")

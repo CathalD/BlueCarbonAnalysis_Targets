@@ -12,7 +12,7 @@ library(tarchetypes)
 #
 # What this produces:
 #   1. Compaction-corrected, gap-filled cores (BlueCarbon method)
-#   2. OC stocks estimated via linear extrapolation to 100 cm (BlueCarbon)
+#   2. OC stocks estimated via linear extrapolation to max core depth (BlueCarbon)
 #   3. Extrapolation validation plot (how much error do short cores introduce?)
 #   4. core_samples_bc_processed.csv — decompacted cores in cores_raw format,
 #      ready to feed into harmonize_depths() and the full spatial pipeline
@@ -53,23 +53,28 @@ list(
   tar_target(bc_decompacted,
     run_compaction_correction(bc_samples_file, bc_compaction_file)),
 
-  # ── Step 2: BlueCarbon OC stocks ─────────────────────────────────────────
-  # Estimates total OC stock (g/cm² → kg/m²) to 100 cm per core.
+  # ── Step 2: Auto-detect analysis depth from data ────────────────────────────
+  # Uses the maximum corrected core depth across all cores so short datasets
+  # don't fail trying to extrapolate to a fixed 100 cm target.
+  tar_target(bc_max_depth,
+    floor(max(bc_decompacted$maxd_corrected, na.rm = TRUE))),
+
+  # ── Step 3: BlueCarbon OC stocks ─────────────────────────────────────────
+  # Estimates total OC stock (g/cm² → kg/m²) to bc_max_depth per core.
   # Short cores are extrapolated via lm(cumulative_OC ~ depth).
   # Output includes stock_kg_m2, stockwc_kg_m2 (whole core), stock_se_kg_m2.
   tar_target(bc_stocks,
-    estimate_bc_stocks(bc_locations_file, bc_decompacted, depth = 100)),
+    estimate_bc_stocks(bc_locations_file, bc_decompacted, depth = bc_max_depth)),
 
-  # ── Step 3: Extrapolation validation ────────────────────────────────────────
+  # ── Step 4: Extrapolation validation ────────────────────────────────────────
   # Quantifies error introduced by the linear extrapolation in cores that
-  # don't reach 100 cm. Uses the deepest cores as truth, truncates to
+  # don't reach bc_max_depth. Uses the deepest cores as truth, truncates to
   # 90/75/50/25% depth, re-extrapolates, and measures % error.
   # Returns a list: $data (data frame) and $plot (ggplot).
-  # NOTE: requires at least one core ≥ 100 cm to work. With current test data
-  # (max depth 69.5 cm) this will message "no cores reach target depth" —
-  # update depth argument or add deeper cores to test this validation.
+  # NOTE: requires at least one core reaching bc_max_depth to work. With a
+  # uniform short-core dataset this will message "no cores reach target depth".
   tar_target(bc_extrapolation_test,
-    run_extrapolation_test(bc_decompacted, depth = 100)),
+    run_extrapolation_test(bc_decompacted, depth = bc_max_depth)),
 
   # ── Step 4: Prepare cores for harmonize_depths() ────────────────────────────
   # Converts decompacted samples to cores_raw format:
