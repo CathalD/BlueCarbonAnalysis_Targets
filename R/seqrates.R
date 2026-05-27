@@ -45,14 +45,26 @@ load_and_assign_ages <- function(samples_path, compaction_path, chronology_path)
       soc_pct    = soc_g_kg / 10
     )
 
-  decompacted <- BlueCarbon::decompact(
-    samples_sub,
+  # Rename to BlueCarbon standard names before decompact() — same fix as
+  # bluecarbon_prep.R — ensures output is always mind_corrected/maxd_corrected/dbd_corrected.
+  samples_bc <- samples_sub
+  names(samples_bc)[names(samples_bc) == "depth_top_cm"]       <- "mind"
+  names(samples_bc)[names(samples_bc) == "depth_bottom_cm"]    <- "maxd"
+  names(samples_bc)[names(samples_bc) == "bulk_density_g_cm3"] <- "dbd"
+
+  decompacted_raw <- BlueCarbon::decompact(
+    samples_bc,
     core       = "core_id",
     compaction = "compaction",
-    mind       = "depth_top_cm",
-    maxd       = "depth_bottom_cm",
-    dbd        = "bulk_density_g_cm3"
+    mind       = "mind",
+    maxd       = "maxd",
+    dbd        = "dbd"
   )
+
+  decompacted <- decompacted_raw
+  names(decompacted)[names(decompacted) == "mind"] <- "depth_top_cm"
+  names(decompacted)[names(decompacted) == "maxd"] <- "depth_bottom_cm"
+  names(decompacted)[names(decompacted) == "dbd"]  <- "bulk_density_g_cm3"
 
   # Assign an age to each sample via linear interpolation of chronology anchors.
   # Each core's anchor points (depth_cm, age_ybp) define the age-depth relationship.

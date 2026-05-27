@@ -106,6 +106,9 @@ list(
     )),
 
   tar_target(bc_comparison_plot,
-    plot_bc_comparison(bc_vm_comparison))
+    plot_bc_comparison(bc_vm_comparison)),
+
+  # ── Report ───────────────────────────────────────────────────────────────────
+  tar_quarto(report_bluecarbon, path = "reports/bluecarbon_comparison.qmd")
 
 )

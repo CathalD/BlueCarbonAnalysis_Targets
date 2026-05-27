@@ -73,6 +73,9 @@ list(
 
   # ── Step 4: Plot ─────────────────────────────────────────────────────────────
   tar_target(sr_plot,
-    plot_seq_rates(sr_rates, sr_locations_file))
+    plot_seq_rates(sr_rates, sr_locations_file)),
+
+  # ── Report ───────────────────────────────────────────────────────────────────
+  tar_quarto(report_seqrates, path = "reports/seqrates.qmd")
 
 )
