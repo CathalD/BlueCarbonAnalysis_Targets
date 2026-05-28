@@ -63,9 +63,11 @@ load_pb210_data <- function(pb210_path) {
 # ── 2. Fit CRS and CIC age models per core ───────────────────────────────────
 
 fit_pb210_age_models <- function(pb210_data) {
-  if (!requireNamespace("pb210", quietly = TRUE))
-    stop("[pb210] Package 'pb210' is not installed.\n",
-         "  Install with: remotes::install_github('paleolimbot/pb210')")
+  if (!requireNamespace("pb210", quietly = TRUE)) {
+    message("[pb210] Package 'pb210' is not installed — CRS/CIC models skipped.\n",
+            "  Install with: remotes::install_github('paleolimbot/pb210')")
+    return(list())
+  }
 
   cores <- split(pb210_data, pb210_data$core_id)
 
@@ -119,6 +121,13 @@ fit_pb210_age_models <- function(pb210_data) {
 # ── 3. Extract age predictions from fitted models ─────────────────────────────
 
 extract_pb210_ages <- function(pb210_models) {
+  if (length(pb210_models) == 0)
+    return(data.frame(
+      core_id = character(), depth_mid_cm = numeric(), cum_mass = numeric(),
+      age_crs = numeric(), age_crs_sd = numeric(),
+      age_cic = numeric(), age_cic_sd = numeric()
+    ))
+
   results <- lapply(names(pb210_models), function(cid) {
     m <- pb210_models[[cid]]
     if (is.null(m)) return(NULL)
@@ -169,6 +178,11 @@ extract_pb210_ages <- function(pb210_models) {
 # and replaces the age column with CRS or CIC ages interpolated from pb210_ages.
 
 assign_pb210_ages_to_cores <- function(cores_with_ages, pb210_ages, method = "crs") {
+  if (is.null(pb210_ages) || nrow(pb210_ages) == 0) {
+    message("[pb210] No ", toupper(method), " ages available — returning linear interpolation ages unchanged.")
+    return(cores_with_ages)
+  }
+
   age_col <- paste0("age_", method)
   if (!age_col %in% names(pb210_ages))
     stop("[pb210] Column '", age_col, "' not found in pb210_ages.")
