@@ -26,32 +26,44 @@ library(tidyr)
 library(ggplot2)
 library(knitr)
 
-sr_cores   <- tar_read(sr_cores_with_ages, store = "_targets_seqrates")
-sr_rates   <- tar_read(sr_rates,           store = "_targets_seqrates")
-sr_summary <- tar_read(sr_summary,         store = "_targets_seqrates")
-sr_plot    <- tar_read(sr_plot,            store = "_targets_seqrates")
+store <- "_targets_seqrates"
+
+sr_cores      <- tar_read(sr_cores_with_ages,       store = store)
+sr_rates      <- tar_read(sr_rates,                 store = store)
+sr_summary    <- tar_read(sr_summary,               store = store)
+sr_plot       <- tar_read(sr_plot,                  store = store)
+sr_pb210_ages <- tar_read(sr_pb210_ages,            store = store)
+sr_age_plot   <- tar_read(sr_pb210_age_plot,        store = store)
+sr_crs_rates  <- tar_read(sr_crs_rates,             store = store)
+sr_cic_rates  <- tar_read(sr_cic_rates,             store = store)
+sr_comparison <- tar_read(sr_method_comparison,     store = store)
+sr_comp_plot  <- tar_read(sr_method_comparison_plot, store = store)
 
 has_rates <- !is.null(sr_rates) && nrow(sr_rates) > 0
+has_pb210 <- !is.null(sr_pb210_ages) && nrow(sr_pb210_ages) > 0
 ```
 
 ## What this report shows
 
-Carbon sequestration rate is the mean rate at which organic carbon has
+Carbon sequestration rate (CAR) is the mean rate at which organic carbon has
 accumulated in the soil column over a defined time window, estimated from
-radiometric age-depth chronology data (^210^Pb or ^14^C dated horizons).
+radiometric ^210^Pb chronology data.
 
-**Method:**
+This report compares **three age-depth models** and shows how the choice of
+model affects the estimated sequestration rate:
+
+| Model | Input data | Assumption | Uncertainty |
+|---|---|---|---|
+| **Linear interpolation** | Pre-assigned dates (`core_chronology.csv`) | Constant rate between anchor points | None propagated |
+| **CRS** (Constant Rate of Supply) | Raw ^210^Pb activity (`core_pb210.csv`) | Constant Pb flux; variable sedimentation | Full propagation |
+| **CIC** (Constant Initial Concentration) | Raw ^210^Pb activity (`core_pb210.csv`) | Constant sedimentation; variable Pb flux | Full propagation |
+
+**Common workflow:**
 
 1. Sample depths are decompaction-corrected (same as the BlueCarbon pipeline).
-2. Ages at each sample midpoint are assigned by **linear interpolation** between
-   chronology anchor points; samples outside the dated range are extrapolated
-   using the nearest-end slope.
+2. Each age model assigns an age to every sample depth.
 3. BlueCarbon's `estimate_seq_rate()` integrates OC accumulation over the
-   specified timeframe (default **`r if(has_rates) sr_rates$timeframe_yr[1] else 100` years**).
-
-> **Note:** Linear interpolation is a simplified age model. For Bayesian
-> age-depth modelling with uncertainty, use Bacon or Bchron externally
-> and import the output ages in the same `core_chronology.csv` format.
+   timeframe (default **`r if(has_rates) sr_rates$timeframe_yr[1] else 100` years**).
 
 ---
 
@@ -173,6 +185,126 @@ if (has_rates) {
     theme(legend.position = "bottom")
 }
 ```
+
+---
+
+## ^210^Pb age model comparison
+
+### Raw ^210^Pb activity profiles
+
+The plot below shows the measured total ^210^Pb activity (Bq/kg) at each
+depth. The supported (background) level of `r if(has_pb210) round(mean(tar_read(sr_pb210_data, store=store)$pb210_supported_Bq_kg),1) else "~15"` Bq/kg is indicated
+by the dashed line. Excess activity above this level is used by both the
+CRS and CIC models to derive ages.
+
+```{r eval=has_pb210, fig.height=4, fig.cap="Raw total 210Pb activity profiles. Dashed line = supported (background) level. Activity declines with depth as the unsupported 210Pb decays."}
+if (has_pb210) {
+  pb210_data <- tar_read(sr_pb210_data, store = store)
+  supported  <- mean(pb210_data$pb210_supported_Bq_kg)
+
+  ggplot(pb210_data,
+    aes(x = pb210_total_Bq_kg, y = depth_mid_cm, colour = core_id)) +
+    geom_vline(xintercept = supported, linetype = "dashed", colour = "grey50") +
+    geom_errorbarh(
+      aes(xmin = pb210_total_Bq_kg - pb210_total_sd_Bq_kg,
+          xmax = pb210_total_Bq_kg + pb210_total_sd_Bq_kg),
+      height = 0.8, alpha = 0.5
+    ) +
+    geom_point(size = 2.5) +
+    scale_y_reverse(name = "Depth (cm)") +
+    scale_x_continuous(name = "Total ²¹⁰Pb activity (Bq/kg)") +
+    scale_colour_brewer(palette = "Set2", name = "Core") +
+    facet_wrap(~core_id) +
+    labs(title = "Total ²¹⁰Pb activity with depth") +
+    theme_minimal(base_size = 11) +
+    theme(legend.position = "none")
+}
+```
+
+### Age-depth models
+
+```{r eval=has_pb210, fig.height=5, fig.cap="Age-depth comparison: CRS (green, with ±1 SD ribbon), CIC (orange), and linear interpolation (blue). CRS allows sedimentation rate to vary; CIC assumes it is constant."}
+if (has_pb210) sr_age_plot
+```
+
+#### Model characteristics
+
+**CRS (Constant Rate of Supply — Appleby & Oldfield 1978)**
+
+Ages are derived from the cumulative ^210^Pb inventory remaining below each
+horizon: older horizons have a larger fraction of the total inventory below
+them. This model makes no assumption about sedimentation rate and handles
+changes in accumulation well. It is the most widely used model in blue
+carbon research.
+
+**CIC (Constant Initial Concentration — Krishnaswami et al. 1971)**
+
+Ages are derived from the log-linear decay of excess ^210^Pb with depth,
+assuming a constant sedimentation rate. If sedimentation has varied (e.g.
+post-disturbance acceleration), CIC will misdate those sections. Useful as
+a check: large CRS–CIC age differences indicate non-constant accumulation.
+
+**Linear interpolation (current default)**
+
+Anchor ages from the `core_chronology.csv` file are linearly interpolated.
+These anchors may themselves come from CRS modelling done externally, or
+from ^14^C dates at depth. No measurement uncertainty is propagated.
+
+```{r eval=has_pb210}
+if (has_pb210) {
+  sr_pb210_ages |>
+    mutate(across(where(is.numeric), \(x) round(x, 1))) |>
+    select(
+      Core              = core_id,
+      `Depth mid (cm)`  = depth_mid_cm,
+      `CRS age (yr BP)` = age_crs,
+      `CRS ±1 SD`       = age_crs_sd,
+      `CIC age (yr BP)` = age_cic,
+      `CIC ±1 SD`       = age_cic_sd
+    ) |>
+    kable(caption = "Model-derived ages at each ²¹⁰Pb measurement depth.")
+}
+```
+
+---
+
+## Sequestration rate comparison
+
+The plot below shows the sequestration rate estimated from each age model
+for the same cores and the same OC data. Differences between methods reflect
+how much the age-depth model choice influences the final rate estimate.
+
+```{r eval=has_rates && has_pb210, fig.height=4, fig.cap="Sequestration rate by core and age model. Bar = timeframe rate (100 yr); circle = whole-core rate."}
+if (has_rates && has_pb210) sr_comp_plot
+```
+
+```{r eval=has_rates && has_pb210}
+if (has_rates && has_pb210) {
+  sr_comparison |>
+    mutate(across(where(is.numeric), \(x) round(x, 1))) |>
+    select(
+      `Age model`                      = method,
+      Core                             = core_id,
+      `Rate — timeframe (g C/m²/yr)`   = seq_rate_g_m2_yr,
+      `Rate — whole core (g C/m²/yr)`  = seq_rate_wc_g_m2_yr
+    ) |>
+    arrange(Core, `Age model`) |>
+    kable(caption = "Sequestration rate by age model and core.")
+}
+```
+
+### Which model to use?
+
+| Situation | Recommended model |
+|---|---|
+| Variable sedimentation (disturbance, sea-level change) | **CRS** |
+| Stable, uniform sediment with constant accumulation | CIC (as check against CRS) |
+| ^14^C dates available at depth | Linear interpolation of calibrated ages |
+| No raw activity data, only anchor dates | Linear interpolation (current default) |
+
+For reporting to carbon registries (e.g. Verra VM0033), the CRS model is
+generally preferred because it does not require the constant-sedimentation
+assumption that is often violated in dynamic coastal wetlands.
 
 ---
 
