@@ -34,7 +34,12 @@ library(tarchetypes)
 #   Cores without chronology data or with max age < timeframe are skipped.
 
 tar_option_set(
-  packages = c("dplyr", "readr", "tidyr", "ggplot2", "BlueCarbon", "pb210")
+  packages = c("dplyr", "readr", "tidyr", "ggplot2", "BlueCarbon")
+  # pb210 is NOT listed here — it is optional and loaded only inside
+  # fit_pb210_age_models() via requireNamespace(). This allows the full
+  # pipeline to run even when pb210 is not installed; the CRS/CIC targets
+  # will return empty results and be skipped in the comparison.
+  # Install with: remotes::install_github("paleolimbot/pb210")
 )
 
 tar_source("R/")
